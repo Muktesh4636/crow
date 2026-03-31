@@ -8,16 +8,30 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,7 +40,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -37,21 +56,339 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Size as CoilSize
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.kokoroko.R
 import com.example.kokoroko.ui.theme.KokorokoTheme
 import com.example.kokoroko.ui.theme.OrangePrimary
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 private const val PKG_PHONEPE = "com.phonepe.app"
 private const val PKG_GPay = "com.google.android.apps.nbu.paisa.user"
 private const val PKG_PAYTM = "net.one97.paytm"
+
+/** Live cricket feed: https://gunduata.club/api/cricket/live/ */
+private const val CRICKET_ODDS_API_URL = "https://gunduata.club/api/cricket/live/"
+
+private val cricketOddsHttpClient: OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(14, TimeUnit.SECONDS)
+        .writeTimeout(14, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+/** IPL / cricket screen: light blue & pink panels; accent for badges & buttons. */
+private val CricketOddsAccent = Color(0xFF42A5F5)
+private val CricketOddsBlue = Color(0xFF90CAF9)
+private val CricketOddsPink = Color(0xFFF48FB1)
+private val CricketOddsOnBlue = Color(0xFF0D47A1)
+private val CricketOddsOnPink = Color(0xFF880E4F)
+private val CricketStreamLiveRed = Color(0xFFE53935)
+
+private enum class CricketOddsFilterTab {
+    All,
+    Main,
+    OverByOver
+}
+
+/** Over-by-over style markets (ball/over granularity); excluded from Main. */
+private fun isOverByOverMarket(question: String): Boolean {
+    val q = question.lowercase()
+    if (
+        listOf(
+            "over by over",
+            "over-by-over",
+            "ball by ball",
+            "next over",
+            "next ball",
+            "current over",
+            "this over",
+            "runs in over",
+            "runs in the over",
+            "in this over",
+            "per over",
+            "over / under",
+            "over under",
+            "o/u",
+            "odd over",
+            "even over"
+        ).any { q.contains(it) }
+    ) {
+        return true
+    }
+    if (Regex("\\d+(st|nd|rd|th)?\\s+over\\b").containsMatchIn(q)) return true
+    if (q.contains(" over ") && (q.contains("ball") || q.contains("delivery"))) return true
+    return false
+}
+
+private fun filterCricketMarkets(
+    markets: List<CricketMarketUi>,
+    tab: CricketOddsFilterTab
+): List<CricketMarketUi> =
+    when (tab) {
+        CricketOddsFilterTab.All -> markets
+        CricketOddsFilterTab.Main -> markets.filter { !isOverByOverMarket(it.question) }
+        CricketOddsFilterTab.OverByOver -> markets.filter { isOverByOverMarket(it.question) }
+    }
+
+private data class CricketOutcomeUi(val label: String, val odd: String)
+
+private data class CricketMarketUi(val question: String, val outcomes: List<CricketOutcomeUi>)
+
+private data class CricketEventUi(
+    val matchTitle: String,
+    val leagueLabel: String,
+    val markets: List<CricketMarketUi>
+)
+
+private data class CricketBetSelection(
+    val matchTitle: String,
+    val marketQuestion: String,
+    val selectionLabel: String,
+    val odd: String
+)
+
+private val FALLBACK_CRICKET_ODDS_JSON = """
+{"matches":[
+  {"league":"IPL 2025 — Qualifier","teamBlue":"MI","teamPink":"CSK","oddBlue":"1.85","oddPink":"2.00"},
+  {"league":"T20 World Cup","teamBlue":"IND","teamPink":"AUS","oddBlue":"1.72","oddPink":"2.10"},
+  {"league":"The Hundred","teamBlue":"LNS","teamPink":"OVI","oddBlue":"1.95","oddPink":"1.88"},
+  {"league":"BBL","teamBlue":"SYT","teamPink":"PRS","oddBlue":"2.05","oddPink":"1.78"}
+]}
+""".trimIndent()
+
+private fun cleanOpponentFeedText(raw: String): String =
+    raw.replace(Regex("/\\*[^*]*\\*/"), "").trim()
+
+private fun leagueFromEventPaths(paths: JSONArray?): String {
+    if (paths == null) return ""
+    return buildString {
+        for (i in 0 until paths.length()) {
+            val p = paths.optJSONObject(i) ?: continue
+            val desc = p.optString("description", "")
+            if (desc.equals("Cricket", ignoreCase = true)) continue
+            if (desc.isNotBlank()) {
+                if (isNotEmpty()) append(" · ")
+                append(desc)
+            }
+        }
+    }.trim()
+}
+
+private fun marketQuestionText(m: JSONObject): String {
+    val descs = m.optJSONObject("descriptions")
+    val en = descs?.optString("en", "")?.trim().orEmpty()
+    val q = if (en.isNotBlank()) en else m.optString("description", "")
+    return cleanOpponentFeedText(q).ifBlank { "Market" }
+}
+
+private fun outcomeDisplayName(o: JSONObject): String {
+    val descs = o.optJSONObject("descriptions")
+    val en = descs?.optString("en", "")?.trim().orEmpty()
+    val name = if (en.isNotBlank()) en else o.optString("description", "")
+    return cleanOpponentFeedText(name).ifBlank { "-" }
+}
+
+/** Reads gunduata / BP-style `consolidatedPrice.currentPrice.decimal`. */
+private fun extractOutcomeOdd(o: JSONObject): String {
+    val cp = o.optJSONObject("consolidatedPrice")
+    if (cp != null) {
+        val cur = cp.optJSONObject("currentPrice") ?: cp.optJSONObject("price")
+        if (cur != null) {
+            if (cur.has("decimal") && !cur.isNull("decimal")) {
+                try {
+                    return String.format("%.2f", cur.getDouble("decimal"))
+                } catch (_: Exception) { }
+            }
+            val fmt = cur.optString("format", "").trim()
+            if (fmt.isNotBlank()) return fmt
+        }
+    }
+    val s = formatOdd(o, "decimalOdds", "price", "odds", "backPrice", "trueOdds", "decimal")
+    return if (s.isNotBlank() && s != "-") s else "-"
+}
+
+private fun parseMatchObject(item: JSONObject): CricketEventUi {
+    val league = item.optString("league", item.optString("tournament", item.optString("competition", item.optString("title", "Match"))))
+    val tb = item.optString("teamBlue", item.optString("team1", item.optString("home", item.optString("t1", ""))))
+    val tp = item.optString("teamPink", item.optString("team2", item.optString("away", item.optString("t2", ""))))
+    val ob = formatOdd(item, "oddBlue", "odds1", "odd1", "price1")
+    val op = formatOdd(item, "oddPink", "odds2", "odd2", "price2")
+    val teamBlue = if (tb.isNotBlank()) tb else "Team A"
+    val teamPink = if (tp.isNotBlank()) tp else "Team B"
+    return CricketEventUi(
+        matchTitle = league,
+        leagueLabel = "",
+        markets = listOf(
+            CricketMarketUi(
+                question = "Match odds",
+                outcomes = listOf(
+                    CricketOutcomeUi(teamBlue, ob),
+                    CricketOutcomeUi(teamPink, op)
+                )
+            )
+        )
+    )
+}
+
+/** Full API event: `description`, `eventPaths`, `markets[].description`, `markets[].outcomes[]`. */
+private fun parseGunduataEventToUi(data: JSONObject): CricketEventUi {
+    val matchTitle = data.optString("description", "").ifBlank { "Cricket" }
+    val leagueLabel = leagueFromEventPaths(data.optJSONArray("eventPaths"))
+    val marketsArr = data.optJSONArray("markets") ?: JSONArray()
+    val markets = mutableListOf<CricketMarketUi>()
+    for (i in 0 until marketsArr.length()) {
+        val m = marketsArr.optJSONObject(i) ?: continue
+        val outcomesArr = m.optJSONArray("outcomes")
+            ?: m.optJSONArray("selections")
+            ?: m.optJSONArray("runners")
+            ?: continue
+        val outs = mutableListOf<CricketOutcomeUi>()
+        for (j in 0 until outcomesArr.length()) {
+            val o = outcomesArr.optJSONObject(j) ?: continue
+            if (o.optBoolean("withdrawn", false)) continue
+            if (o.optBoolean("hidden", false)) continue
+            val label = outcomeDisplayName(o)
+            val odd = extractOutcomeOdd(o)
+            outs.add(CricketOutcomeUi(label, odd))
+        }
+        if (outs.isNotEmpty()) {
+            markets.add(CricketMarketUi(question = marketQuestionText(m), outcomes = outs))
+        }
+    }
+    return CricketEventUi(matchTitle = matchTitle, leagueLabel = leagueLabel, markets = markets)
+}
+
+private fun parseEventDataObject(o: JSONObject): CricketEventUi? {
+    if (o.has("markets") && o.optJSONArray("markets") != null) {
+        return parseGunduataEventToUi(o)
+    }
+    return parseMatchObject(o)
+}
+
+private fun parseCricketFeedJson(json: String): List<CricketEventUi> {
+    val out = mutableListOf<CricketEventUi>()
+    try {
+        val trimmed = json.trim()
+        if (trimmed.startsWith("[")) {
+            val arr = JSONArray(trimmed)
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { parseEventDataObject(it) }?.let { out.add(it) }
+            }
+            if (out.isNotEmpty()) return out
+        }
+        val obj = JSONObject(trimmed)
+        if (obj.has("data")) {
+            when (val raw = obj.get("data")) {
+                is JSONObject -> parseEventDataObject(raw)?.let { out.add(it) }
+                is JSONArray -> {
+                    for (i in 0 until raw.length()) {
+                        raw.optJSONObject(i)?.let { parseEventDataObject(it) }?.let { out.add(it) }
+                    }
+                }
+            }
+        }
+        if (out.isNotEmpty()) return out
+        val arr = when {
+            obj.has("matches") -> obj.getJSONArray("matches")
+            obj.has("odds") -> obj.getJSONArray("odds")
+            obj.has("results") -> obj.getJSONArray("results")
+            else -> null
+        }
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { parseEventDataObject(it) }?.let { out.add(it) }
+            }
+        }
+    } catch (_: Exception) { }
+    return out
+}
+
+/** In-memory cricket feed: prefetch on main shell + TTL so Cricket opens with odds already warm. */
+private object CricketFeedStore {
+    @Volatile
+    private var cachedEvents: List<CricketEventUi>? = null
+    @Volatile
+    private var cachedAtMs: Long = 0L
+    private val mutex = Mutex()
+    private const val CACHE_TTL_MS = 90_000L
+
+    fun peek(): List<CricketEventUi>? = cachedEvents
+
+    suspend fun load(): List<CricketEventUi> {
+        val now = System.currentTimeMillis()
+        val snap = cachedEvents
+        if (snap != null && now - cachedAtMs < CACHE_TTL_MS) return snap
+        return mutex.withLock {
+            val t = System.currentTimeMillis()
+            val warm = cachedEvents
+            if (warm != null && t - cachedAtMs < CACHE_TTL_MS) return warm
+            val fresh = fetchCricketFromNetwork()
+            cachedEvents = fresh
+            cachedAtMs = System.currentTimeMillis()
+            fresh
+        }
+    }
+
+    private suspend fun fetchCricketFromNetwork(): List<CricketEventUi> = withContext(Dispatchers.IO) {
+        if (CRICKET_ODDS_API_URL.isBlank()) {
+            return@withContext parseCricketFeedJson(FALLBACK_CRICKET_ODDS_JSON)
+        }
+        try {
+            val req = Request.Builder()
+                .url(CRICKET_ODDS_API_URL)
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || body.isBlank()) {
+                    return@withContext parseCricketFeedJson(FALLBACK_CRICKET_ODDS_JSON)
+                }
+                val parsed = parseCricketFeedJson(body)
+                if (parsed.isEmpty()) parseCricketFeedJson(FALLBACK_CRICKET_ODDS_JSON) else parsed
+            }
+        } catch (_: Exception) {
+            parseCricketFeedJson(FALLBACK_CRICKET_ODDS_JSON)
+        }
+    }
+}
+
+private fun formatOdd(item: JSONObject, vararg keys: String): String {
+    for (k in keys) {
+        if (!item.has(k) || item.isNull(k)) continue
+        return try {
+            when (val v = item.get(k)) {
+                is Number -> String.format("%.2f", v.toDouble())
+                is String -> v.trim().ifBlank { "-" }
+                else -> v.toString()
+            }
+        } catch (_: Exception) {
+            "-"
+        }
+    }
+    return "-"
+}
 
 /** WhatsApp / Telegram: digits only, international (91 = India + 987654321). */
 private const val CONTACT_PHONE_WHATSAPP_TELEGRAM = "91987654321"
@@ -79,7 +416,41 @@ private fun Context.openTelegramToContact() {
     }
 }
 
-/** Drawables loaded via Coil; decode size matches layout pixels (capped) to cut memory and scroll jank. */
+private fun Context.openInstagramApp() {
+    try {
+        val launch = packageManager.getLaunchIntentForPackage("com.instagram.android")
+        if (launch != null) {
+            startActivity(launch)
+        } else {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.instagram.com/")))
+        }
+    } catch (e: Exception) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.instagram.com/")))
+        } catch (e2: Exception) {
+            Toast.makeText(this, "Unable to open Instagram", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+private fun Context.openYoutubeApp() {
+    try {
+        val launch = packageManager.getLaunchIntentForPackage("com.google.android.youtube")
+        if (launch != null) {
+            startActivity(launch)
+        } else {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/")))
+        }
+    } catch (e: Exception) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/")))
+        } catch (e2: Exception) {
+            Toast.makeText(this, "Unable to open YouTube", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+/** Drawables loaded via Coil; stable px sizing + remembered request reduce flicker during fast scroll. */
 @Composable
 private fun DrawableImage(
     resId: Int,
@@ -88,30 +459,34 @@ private fun DrawableImage(
     contentScale: ContentScale = ContentScale.Crop
 ) {
     val context = LocalContext.current
-    val density = LocalDensity.current
     BoxWithConstraints(modifier = modifier) {
-        val decodeSize = run {
-            val wPx =
-                if (maxWidth != Dp.Unspecified && maxWidth.value.isFinite() && maxWidth.value > 0f) {
-                    with(density) { maxWidth.roundToPx() }.coerceIn(32, 2048)
-                } else null
-            val hPx =
-                if (maxHeight != Dp.Unspecified && maxHeight.value.isFinite() && maxHeight.value > 0f) {
-                    with(density) { maxHeight.roundToPx() }.coerceIn(32, 2048)
-                } else null
+        val decodeSize = remember(constraints.maxWidth, constraints.maxHeight) {
+            fun bucket(px: Int): Int = (((px.coerceIn(32, 2048) + 16) / 32) * 32).coerceIn(32, 2048)
             when {
-                wPx != null && hPx != null -> CoilSize(wPx, hPx)
-                wPx != null -> CoilSize(wPx, wPx)
-                hPx != null -> CoilSize(hPx, hPx)
+                constraints.hasBoundedWidth && constraints.hasBoundedHeight ->
+                    CoilSize(bucket(constraints.maxWidth), bucket(constraints.maxHeight))
+                constraints.hasBoundedWidth -> {
+                    val w = bucket(constraints.maxWidth)
+                    CoilSize(w, w)
+                }
+                constraints.hasBoundedHeight -> {
+                    val h = bucket(constraints.maxHeight)
+                    CoilSize(h, h)
+                }
                 else -> CoilSize(512, 512)
             }
         }
-        AsyncImage(
-            model = ImageRequest.Builder(context)
+        val imageRequest = remember(resId, decodeSize, context) {
+            ImageRequest.Builder(context)
                 .data(resId)
                 .size(decodeSize)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(false)
-                .build(),
+                .build()
+        }
+        AsyncImage(
+            model = imageRequest,
             contentDescription = contentDescription,
             modifier = Modifier.fillMaxSize(),
             contentScale = contentScale
@@ -170,6 +545,12 @@ fun MainScreen(onLogout: () -> Unit) {
     var selectedTab by remember { mutableStateOf("home") }
     var currentSubScreen by remember { mutableStateOf("main") }
 
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            CricketFeedStore.load()
+        }
+    }
+
     val onHomeMain = selectedTab == "home" && currentSubScreen == "main"
     BackHandler(enabled = !onHomeMain) {
         currentSubScreen = "main"
@@ -186,7 +567,7 @@ fun MainScreen(onLogout: () -> Unit) {
             }
         }
     ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues)) {
+        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
             when {
                 currentSubScreen == "payment_options" ->
                     PaymentOptionsScreen(onBack = { currentSubScreen = "main" })
@@ -220,22 +601,74 @@ fun MainScreen(onLogout: () -> Unit) {
                         onWallet = {
                             selectedTab = "wallet"
                             currentSubScreen = "main"
+                        },
+                        onOpenProfile = {
+                            selectedTab = "profile"
+                            currentSubScreen = "main"
                         }
                     )
-                else -> when (selectedTab) {
-                    "home" -> HomeScreen(onOpenGundata = { currentSubScreen = "gundata_live" })
-                    "promotion" -> PromotionsScreen(onBack = { selectedTab = "home" })
-                    "wallet" -> WalletScreen(
-                        onBack = { selectedTab = "home" },
-                        onDepositClick = { currentSubScreen = "payment_options" }
+                currentSubScreen == "cock_fight_live" ->
+                    CockFightLiveScreen(
+                        onBack = { currentSubScreen = "main" },
+                        onWallet = {
+                            selectedTab = "wallet"
+                            currentSubScreen = "main"
+                        },
+                        onOpenProfile = {
+                            selectedTab = "profile"
+                            currentSubScreen = "main"
+                        }
                     )
-                    "profile" -> ProfileScreen(
-                        onBack = { selectedTab = "home" },
-                        onLogout = onLogout,
-                        onOpenProfileDetails = { currentSubScreen = "profile_details" },
-                        onOpenReferralEarn = { currentSubScreen = "referral" },
-                        onOpenResetPin = { currentSubScreen = "reset_pin" }
-                    )
+                currentSubScreen == "cricket" ->
+                    CricketOddsScreen(onBack = { currentSubScreen = "main" })
+                else -> {
+                    val tabOrder = listOf("home", "promotion", "wallet", "profile")
+                    AnimatedContent(
+                        targetState = selectedTab,
+                        transitionSpec = {
+                            val initialIndex = tabOrder.indexOf(initialState).coerceAtLeast(0)
+                            val targetIndex = tabOrder.indexOf(targetState).coerceAtLeast(0)
+                            val forward = targetIndex > initialIndex
+                            if (forward) {
+                                (slideInHorizontally(tween(280)) { full -> full } + fadeIn(tween(280))) togetherWith
+                                    (slideOutHorizontally(tween(280)) { full -> -full } + fadeOut(tween(280)))
+                            } else {
+                                (slideInHorizontally(tween(280)) { full -> -full } + fadeIn(tween(280))) togetherWith
+                                    (slideOutHorizontally(tween(280)) { full -> full } + fadeOut(tween(280)))
+                            }
+                        },
+                        label = "main_tab",
+                        modifier = Modifier.fillMaxSize()
+                    ) { tab ->
+                        when (tab) {
+                            "home" -> HomeScreen(
+                                onOpenGundata = { currentSubScreen = "gundata_live" },
+                                onOpenCricket = { currentSubScreen = "cricket" },
+                                onOpenCockfight = { currentSubScreen = "cock_fight_live" },
+                                onWalletClick = { selectedTab = "wallet" },
+                                onPromotionsClick = { selectedTab = "promotion" }
+                            )
+                            "promotion" -> PromotionsScreen(onBack = { selectedTab = "home" })
+                            "wallet" -> WalletScreen(
+                                onBack = { selectedTab = "home" },
+                                onDepositClick = { currentSubScreen = "payment_options" }
+                            )
+                            "profile" -> ProfileScreen(
+                                onBack = { selectedTab = "home" },
+                                onLogout = onLogout,
+                                onOpenProfileDetails = { currentSubScreen = "profile_details" },
+                                onOpenReferralEarn = { currentSubScreen = "referral" },
+                                onOpenResetPin = { currentSubScreen = "reset_pin" }
+                            )
+                            else -> HomeScreen(
+                                onOpenGundata = { currentSubScreen = "gundata_live" },
+                                onOpenCricket = { currentSubScreen = "cricket" },
+                                onOpenCockfight = { currentSubScreen = "cock_fight_live" },
+                                onWalletClick = { selectedTab = "wallet" },
+                                onPromotionsClick = { selectedTab = "promotion" }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -245,9 +678,912 @@ fun MainScreen(onLogout: () -> Unit) {
 private val GUNDATA_DICE_FACE = listOf("⚀", "⚁", "⚂", "⚃", "⚄", "⚅")
 
 @Composable
-fun GundataLiveScreen(onBack: () -> Unit, onWallet: () -> Unit) {
+private fun CricketBetCardDialog(
+    selection: CricketBetSelection,
+    onDismiss: () -> Unit,
+    onPlaceBet: () -> Unit
+) {
+    val context = LocalContext.current
+    var stake by remember(selection) { mutableStateOf(100) }
+    val stakeChips = listOf(100, 200, 300, 500, 1000, 2000)
+    val oddDecimal = selection.odd.replace(",", ".").trim().toDoubleOrNull() ?: 0.0
+    val potentialReturn = if (oddDecimal > 0) stake * oddDecimal else 0.0
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Bet slip", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black)
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.Black)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(selection.matchTitle, fontSize = 14.sp, color = Color.DarkGray, maxLines = 2)
+                Spacer(Modifier.height(8.dp))
+                Text(selection.marketQuestion, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Color.Black)
+                Spacer(Modifier.height(12.dp))
+                Surface(
+                    color = CricketOddsAccent.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(selection.selectionLabel, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "@ ${selection.odd}",
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = CricketOddsAccent
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("Stake (₹)", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color.DarkGray)
+                Spacer(Modifier.height(8.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(stakeChips.size) { i ->
+                        val v = stakeChips[i]
+                        val sel = stake == v
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (sel) OrangePrimary else Color(0xFFF0F0F0),
+                            border = if (sel) BorderStroke(2.dp, Color.Black) else null,
+                            modifier = Modifier.clickable { stake = v }
+                        ) {
+                            Text(
+                                "₹$v",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.Black
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Potential return", fontSize = 13.sp, color = Color.DarkGray)
+                    Text(
+                        "₹${String.format("%.2f", potentialReturn)}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = Color.Black
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Cancel", color = Color.Black)
+                    }
+                    Button(
+                        onClick = {
+                            Toast.makeText(
+                                context,
+                                "Bet ₹$stake @ ${selection.odd} — ${selection.selectionLabel}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            onPlaceBet()
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = CricketOddsAccent)
+                    ) {
+                        Text("Place bet", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CricketMarketOddsCard(
+    market: CricketMarketUi,
+    matchTitle: String,
+    onOddClick: (CricketBetSelection) -> Unit
+) {
+    fun fire(outcome: CricketOutcomeUi) {
+        onOddClick(
+            CricketBetSelection(
+                matchTitle = matchTitle,
+                marketQuestion = market.question,
+                selectionLabel = outcome.label,
+                odd = outcome.odd
+            )
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                market.question,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = Color.Black,
+                lineHeight = 20.sp
+            )
+            Spacer(Modifier.height(12.dp))
+            when (market.outcomes.size) {
+                2 -> {
+                    val a = market.outcomes[0]
+                    val b = market.outcomes[1]
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                    ) {
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .background(CricketOddsBlue)
+                                .clickable { fire(a) }
+                                .padding(vertical = 14.dp, horizontal = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                a.label,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = CricketOddsOnBlue,
+                                textAlign = TextAlign.Center,
+                                maxLines = 3,
+                                lineHeight = 18.sp
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                a.odd,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = CricketOddsOnBlue
+                            )
+                        }
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .background(CricketOddsPink)
+                                .clickable { fire(b) }
+                                .padding(vertical = 14.dp, horizontal = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                b.label,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = CricketOddsOnPink,
+                                textAlign = TextAlign.Center,
+                                maxLines = 3,
+                                lineHeight = 18.sp
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                b.odd,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = CricketOddsOnPink
+                            )
+                        }
+                    }
+                }
+                else -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        market.outcomes.forEachIndexed { idx, o ->
+                            val bg =
+                                if (idx % 2 == 0) CricketOddsBlue.copy(alpha = 0.12f)
+                                else CricketOddsPink.copy(alpha = 0.12f)
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(bg)
+                                    .clickable { fire(o) }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    o.label,
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 14.sp,
+                                    color = Color.Black,
+                                    maxLines = 3
+                                )
+                                Text(
+                                    o.odd,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 18.sp,
+                                    color = CricketOddsAccent
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CricketOddsFilterTabs(
+    selected: CricketOddsFilterTab,
+    onSelect: (CricketOddsFilterTab) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        listOf(
+            CricketOddsFilterTab.All to "All",
+            CricketOddsFilterTab.Main to "Main",
+            CricketOddsFilterTab.OverByOver to "Over by over"
+        ).forEach { (tab, label) ->
+            val sel = selected == tab
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelect(tab) },
+                shape = RoundedCornerShape(10.dp),
+                color = if (sel) CricketOddsAccent else Color(0xFFECEFF1),
+                border = if (sel) BorderStroke(1.5.dp, CricketOddsAccent) else BorderStroke(1.dp, Color(0xFFB0BEC5))
+            ) {
+                Text(
+                    text = label,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 10.dp),
+                    textAlign = TextAlign.Center,
+                    fontSize = 12.sp,
+                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                    color = if (sel) Color.White else Color(0xFF37474F),
+                    maxLines = 2,
+                    lineHeight = 14.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CricketLiveBlinkingDot() {
+    val infiniteTransition = rememberInfiniteTransition(label = "cricket_live_dot")
+    val dotAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.28f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(750, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "blink"
+    )
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .alpha(dotAlpha)
+            .background(CricketStreamLiveRed)
+    )
+}
+
+@Composable
+private fun CricketLiveStreamTopBar(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        CricketLiveBlinkingDot()
+        Text(
+            text = "LIVE",
+            color = CricketStreamLiveRed,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.8.sp
+        )
+    }
+}
+
+@Composable
+fun CricketOddsScreen(onBack: () -> Unit) {
+    var betSelection by remember { mutableStateOf<CricketBetSelection?>(null) }
+    var expandedStreamEventIndex by remember { mutableStateOf<Int?>(null) }
+    var oddsFilterTab by remember { mutableStateOf(CricketOddsFilterTab.Main) }
+    BackHandler {
+        when {
+            betSelection != null -> betSelection = null
+            expandedStreamEventIndex != null -> expandedStreamEventIndex = null
+            else -> onBack()
+        }
+    }
+    val cachedFirst = remember { CricketFeedStore.peek().orEmpty() }
+    var events by remember { mutableStateOf(cachedFirst) }
+    var loading by remember { mutableStateOf(cachedFirst.isEmpty()) }
+    LaunchedEffect(Unit) {
+        events = CricketFeedStore.load()
+        loading = false
+    }
+    betSelection?.let { sel ->
+        CricketBetCardDialog(
+            selection = sel,
+            onDismiss = { betSelection = null },
+            onPlaceBet = { betSelection = null }
+        )
+    }
+    Column(Modifier.fillMaxSize().background(Color(0xFFF8FAFC))) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Cricket", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.Black)
+                Text("Live markets & odds", fontSize = 13.sp, color = Color.DarkGray)
+            }
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = CricketOddsAccent.copy(alpha = 0.14f)
+            ) {
+                Text(
+                    "LIVE",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    color = CricketOddsAccent,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+            }
+        }
+        if (loading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = CricketOddsAccent)
+            }
+        } else if (events.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    "No cricket odds available right now.",
+                    fontSize = 15.sp,
+                    color = Color.DarkGray,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                events.forEachIndexed { eIdx, event ->
+                    item(key = "ev_head_$eIdx") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                event.matchTitle,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 18.sp,
+                                color = Color(0xFF1A1A1A),
+                                lineHeight = 24.sp,
+                                letterSpacing = 0.2.sp
+                            )
+                            if (event.leagueLabel.isNotBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    event.leagueLabel,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF757575),
+                                    fontWeight = FontWeight.Normal,
+                                    maxLines = 3,
+                                    lineHeight = 18.sp
+                                )
+                            }
+                        }
+                    }
+                    item(key = "ev_stream_$eIdx") {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.Black)
+                                .clickable { expandedStreamEventIndex = eIdx }
+                        ) {
+                            CricketLiveStreamTopBar(
+                                modifier = Modifier.align(Alignment.TopEnd)
+                            )
+                            Text(
+                                text = "Match starts at 6:00 PM",
+                                modifier = Modifier.align(Alignment.Center),
+                                color = Color.White.copy(alpha = 0.88f),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                    item(key = "ev_odds_tabs_$eIdx") {
+                        CricketOddsFilterTabs(
+                            selected = oddsFilterTab,
+                            onSelect = { oddsFilterTab = it }
+                        )
+                    }
+                    val filteredMarkets = filterCricketMarkets(event.markets, oddsFilterTab)
+                    if (filteredMarkets.isEmpty()) {
+                        item(key = "ev_markets_empty_$eIdx") {
+                            Text(
+                                text = "No markets in this category.",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp, horizontal = 4.dp),
+                                fontSize = 14.sp,
+                                color = Color(0xFF78909C),
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        items(
+                            count = filteredMarkets.size,
+                            key = { mIdx ->
+                                val q = filteredMarkets[mIdx].question
+                                "ev_${eIdx}_m_${mIdx}_${q.hashCode()}"
+                            }
+                        ) { mIdx ->
+                            CricketMarketOddsCard(
+                                market = filteredMarkets[mIdx],
+                                matchTitle = event.matchTitle,
+                                onOddClick = { betSelection = it }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    expandedStreamEventIndex?.let { idx ->
+        val event = events.getOrNull(idx) ?: return@let
+        Dialog(
+            onDismissRequest = { expandedStreamEventIndex = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Black
+            ) {
+                Box(Modifier.fillMaxSize()) {
+                    IconButton(
+                        onClick = { expandedStreamEventIndex = null },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(12.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        CricketLiveBlinkingDot()
+                        Text(
+                            text = "LIVE",
+                            color = CricketStreamLiveRed,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                    }
+                    Text(
+                        text = "Match starts at 6:00 PM",
+                        modifier = Modifier.align(Alignment.Center),
+                        color = Color.White.copy(alpha = 0.88f),
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = event.matchTitle,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 24.dp, vertical = 36.dp),
+                        color = Color.White.copy(alpha = 0.88f),
+                        fontSize = 15.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 3
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val CockMeronRed = Color(0xFFD32F2F)
+private val CockWalaBlue = Color(0xFF1976D2)
+private val CockDrawGreen = Color(0xFF2E7D32)
+private val CockDarkBg = Color(0xFF0D0D0D)
+
+@Composable
+fun CockFightLiveScreen(
+    onBack: () -> Unit,
+    onWallet: () -> Unit,
+    onOpenProfile: () -> Unit
+) {
+    BackHandler { onBack() }
+    val context = LocalContext.current
+    var selectedChip by remember { mutableStateOf(100) }
+    val chips = listOf(50, 100, 200, 300, 500, 1000, 2500, 5000)
+    val roadmapPattern = remember {
+        listOf(
+            listOf("M", "W", "M", "D", "W", "M", "M", "W", "W", "M", "D", "M"),
+            listOf("W", "M", "W", "W", "D", "M", "W", "M", "M", "W", "M", "W"),
+            listOf("M", "M", "W", "D", "W", "W", "M", "M", "D", "W", "M", "M"),
+            listOf("W", "W", "M", "M", "W", "D", "M", "W", "M", "M", "W", "D"),
+            listOf("M", "D", "W", "M", "M", "W", "W", "M", "W", "M", "W", "M"),
+            listOf("W", "M", "M", "W", "W", "M", "D", "W", "M", "W", "M", "W")
+        )
+    }
+
+    Column(Modifier.fillMaxSize().background(CockDarkBg)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Text(
+                "COCK FIGHT LIVE",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                letterSpacing = 0.6.sp
+            )
+            Surface(
+                color = OrangePrimary,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.height(40.dp).clickable { onWallet() }
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Wallet, null, tint = Color.Black, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("₹0", fontWeight = FontWeight.Bold, color = Color.Black)
+                }
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = OrangePrimary.copy(alpha = 0.35f)
+        ) {
+            Text(
+                "Welcome bonus — bet ₹500 free on your first deposit!",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                fontSize = 11.sp,
+                color = Color.Black,
+                maxLines = 2
+            )
+        }
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(248.dp)
+                        .padding(horizontal = 16.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color.Black)
+                ) {
+                    Text(
+                        text = "Live coming soon",
+                        modifier = Modifier.align(Alignment.Center),
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE53935))
+                        )
+                        Text(
+                            text = "LIVE",
+                            color = Color(0xFFE53935),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                    }
+                }
+            }
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .height(52.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(CockMeronRed.copy(alpha = 0.95f), CockWalaBlue.copy(alpha = 0.95f))
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Meron  VS  Wala",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp
+                    )
+                }
+            }
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(88.dp)
+                            .clickable {
+                                Toast.makeText(context, "Meron @ 1.90", Toast.LENGTH_SHORT).show()
+                            },
+                        shape = RoundedCornerShape(10.dp),
+                        color = CockMeronRed
+                    ) {
+                        Column(
+                            Modifier.fillMaxSize().padding(8.dp),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("1.90X", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                            Text("Meron", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(88.dp)
+                            .clickable {
+                                Toast.makeText(context, "Draw @ 4.46", Toast.LENGTH_SHORT).show()
+                            },
+                        shape = RoundedCornerShape(10.dp),
+                        color = CockDrawGreen
+                    ) {
+                        Column(
+                            Modifier.fillMaxSize().padding(8.dp),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("4.46X", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                            Text("Draw", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(88.dp)
+                            .clickable {
+                                Toast.makeText(context, "Wala @ 1.92", Toast.LENGTH_SHORT).show()
+                            },
+                        shape = RoundedCornerShape(10.dp),
+                        color = CockWalaBlue
+                    ) {
+                        Column(
+                            Modifier.fillMaxSize().padding(8.dp),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("1.92X", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                            Text("Wala", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+            item {
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items(chips.size) { i ->
+                        val v = chips[i]
+                        val sel = selectedChip == v
+                        Surface(
+                            shape = CircleShape,
+                            color = if (sel) OrangePrimary else Color(0xFF2A2A2A),
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clickable { selectedChip = v },
+                            border = if (sel) BorderStroke(2.dp, Color.White) else null
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Text(
+                                    "$v",
+                                    color = if (sel) Color.Black else Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(onClick = onOpenProfile) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF2A2A2A),
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Icon(Icons.Default.Settings, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                            }
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            Toast.makeText(
+                                context,
+                                "Place bet ₹$selectedChip",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                    ) {
+                        Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Place Bet…", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
+                    IconButton(onClick = onWallet) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF2A2A2A),
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Icon(Icons.Default.Wallet, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            RoadmapLegendDot(CockMeronRed, "Meron")
+                            RoadmapLegendDot(CockDrawGreen, "Draw")
+                            RoadmapLegendDot(CockWalaBlue, "Wala")
+                            RoadmapLegendDot(Color.Gray, "Cancel")
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        roadmapPattern.forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                row.forEach { cell ->
+                                    val c = when (cell) {
+                                        "M" -> CockMeronRed
+                                        "W" -> CockWalaBlue
+                                        "D" -> CockDrawGreen
+                                        else -> Color.Gray
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                            .background(c)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoadmapLegendDot(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Text(label, fontSize = 10.sp, color = Color.DarkGray)
+    }
+}
+
+@Composable
+fun GundataLiveScreen(
+    onBack: () -> Unit,
+    onWallet: () -> Unit,
+    onOpenProfile: () -> Unit
+) {
     BackHandler { onBack() }
     var region by remember { mutableStateOf("andhra") }
+    var selectedDice by remember { mutableStateOf<Int?>(null) }
     var selectedChip by remember { mutableStateOf(100) }
     val chips = listOf(100, 200, 300, 500, 800, 1000)
     var mainAction by remember { mutableStateOf("Please wait...") }
@@ -279,7 +1615,6 @@ fun GundataLiveScreen(onBack: () -> Unit, onWallet: () -> Unit) {
                 }
             }
         }
-
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp)
@@ -293,37 +1628,26 @@ fun GundataLiveScreen(onBack: () -> Unit, onWallet: () -> Unit) {
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color.Black)
                 ) {
-                    DrawableImage(
-                        R.drawable.gundu_live,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
-                    )
-                    Surface(
-                        color = OrangePrimary,
-                        shape = RoundedCornerShape(4.dp),
-                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE53935))
+                        )
                         Text(
-                            "Live",
-                            color = Color.White,
+                            text = "LIVE",
+                            color = Color(0xFFE53935),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            letterSpacing = 0.8.sp
                         )
-                    }
-                    IconButton(
-                        onClick = { },
-                        modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
-                    ) {
-                        Surface(shape = CircleShape, color = Color.White) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "Refresh",
-                                tint = Color.Black,
-                                modifier = Modifier.padding(8.dp)
-                            )
-                        }
                     }
                 }
             }
@@ -368,22 +1692,34 @@ fun GundataLiveScreen(onBack: () -> Unit, onWallet: () -> Unit) {
 
             item {
                 Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Select number (1–6)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = Color.Black
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for (i in 0..2) {
+                            val n = i + 1
                             GundataDiceCard(
-                                num = i + 1,
+                                num = n,
                                 word = diceWords[i],
                                 emoji = GUNDATA_DICE_FACE[i],
+                                selected = selectedDice == n,
+                                onClick = { selectedDice = n },
                                 modifier = Modifier.weight(1f)
                             )
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for (i in 3..5) {
+                            val n = i + 1
                             GundataDiceCard(
-                                num = i + 1,
+                                num = n,
                                 word = diceWords[i],
                                 emoji = GUNDATA_DICE_FACE[i],
+                                selected = selectedDice == n,
+                                onClick = { selectedDice = n },
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -425,7 +1761,7 @@ fun GundataLiveScreen(onBack: () -> Unit, onWallet: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    GundataSquareIconButton(icon = Icons.Default.Settings) { mainAction = "Settings opened" }
+                    GundataSquareIconButton(icon = Icons.Default.Settings, onClick = onOpenProfile)
                     GundataSquareIconButton(icon = Icons.Default.History) { mainAction = "History opened" }
                     Surface(
                         modifier = Modifier
@@ -491,19 +1827,28 @@ fun GundataLiveScreen(onBack: () -> Unit, onWallet: () -> Unit) {
 }
 
 @Composable
-private fun GundataDiceCard(num: Int, word: String, emoji: String, modifier: Modifier = Modifier) {
+private fun GundataDiceCard(
+    num: Int,
+    word: String,
+    emoji: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Surface(
-        modifier = modifier.height(102.dp),
+        modifier = modifier.height(102.dp).clickable { onClick() },
         shape = RoundedCornerShape(12.dp),
-        color = Color.White,
-        border = BorderStroke(1.dp, Color.LightGray),
-        shadowElevation = 1.dp
+        color = if (selected) OrangePrimary.copy(alpha = 0.35f) else Color.White,
+        border = BorderStroke(
+            width = if (selected) 2.dp else 1.dp,
+            color = if (selected) OrangePrimary else Color.LightGray
+        ),
+        shadowElevation = if (selected) 2.dp else 1.dp
     ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(8.dp)
-                .clickable { },
+                .padding(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
@@ -530,19 +1875,75 @@ private fun GundataSquareIconButton(icon: ImageVector, onClick: () -> Unit) {
 
 @Composable
 fun SplashScreen(onTimeout: () -> Unit) {
+    val title = stringResource(R.string.splash_game_name)
+    var animateIn by remember { mutableStateOf(false) }
+    val glow = rememberInfiniteTransition(label = "splash_glow")
+    val glowAlpha by glow.animateFloat(
+        initialValue = 0.12f,
+        targetValue = 0.42f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glow"
+    )
+    val textAlpha by animateFloatAsState(
+        targetValue = if (animateIn) 1f else 0f,
+        animationSpec = tween(950, easing = FastOutSlowInEasing),
+        label = "splash_fade"
+    )
+    val textScale by animateFloatAsState(
+        targetValue = if (animateIn) 1f else 0.86f,
+        animationSpec = tween(950, easing = FastOutSlowInEasing),
+        label = "splash_scale"
+    )
+
     LaunchedEffect(Unit) {
-        delay(2000)
+        animateIn = true
+        delay(2700)
         onTimeout()
     }
+
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF141414), Color.Black, Color(0xFF0D0D0D))
+                )
+            ),
         contentAlignment = Alignment.Center
     ) {
-        DrawableImage(
-            R.drawable.opening_photo,
-            contentDescription = "Splash Screen",
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.FillBounds
+        Box(
+            modifier = Modifier
+                .size(320.dp)
+                .alpha(glowAlpha)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            OrangePrimary.copy(alpha = 0.55f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
+        Text(
+            text = title,
+            modifier = Modifier
+                .scale(textScale)
+                .alpha(textAlpha),
+            fontSize = 40.sp,
+            fontWeight = FontWeight.Black,
+            color = Color.White,
+            letterSpacing = 5.sp,
+            textAlign = TextAlign.Center,
+            style = TextStyle(
+                shadow = Shadow(
+                    color = OrangePrimary.copy(alpha = 0.75f),
+                    offset = Offset(0f, 5f),
+                    blurRadius = 28f
+                )
+            )
         )
     }
 }
@@ -585,28 +1986,28 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
             modifier = Modifier.size(150.dp).clip(CircleShape).border(2.dp, Color.Black, CircleShape),
             contentScale = ContentScale.Crop
         )
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Login Password", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-        Text("Logout & login if you forgot your pin!", fontSize = 14.sp, color = Color.Gray, modifier = Modifier.padding(top = 8.dp))
-        Spacer(modifier = Modifier.height(24.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(modifier = Modifier.height(20.dp))
+        Text("Login Password", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+        Text("Logout & login if you forgot your pin!", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(top = 6.dp))
+        Spacer(modifier = Modifier.height(18.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             repeat(4) { index ->
                 Surface(
-                    modifier = Modifier.size(60.dp).clickable { if (pin.length < 4) pin += correctPin[pin.length] },
-                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.size(48.dp).clickable { if (pin.length < 4) pin += correctPin[pin.length] },
+                    shape = RoundedCornerShape(10.dp),
                     border = BorderStroke(1.dp, Color.LightGray),
                     color = Color.White
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        if (pin.length > index) Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(Color.Black))
+                        if (pin.length > index) Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(Color.Black))
                     }
                 }
             }
         }
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
         Row {
-            Text("Didn't remember code? ", fontSize = 14.sp, color = Color.Gray)
-            Text("Logout!", fontSize = 14.sp, color = OrangePrimary, fontWeight = FontWeight.Bold)
+            Text("Didn't remember code? ", fontSize = 13.sp, color = Color.Gray)
+            Text("Logout!", fontSize = 13.sp, color = OrangePrimary, fontWeight = FontWeight.Bold)
         }
         Spacer(modifier = Modifier.weight(1f))
         Row(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
@@ -1181,8 +2582,8 @@ fun ProfileScreen(onBack: () -> Unit, onLogout: () -> Unit, onOpenProfileDetails
             item { ProfileMenuItem("Whatsapp", icon = Icons.Default.Chat, iconColor = Color(0xFF4CAF50), onClick = { context.openWhatsAppToContact() }) }
             item { ProfileMenuItem("Telegram", icon = Icons.Default.Send, iconColor = Color(0xFF2196F3), onClick = { context.openTelegramToContact() }) }
             item { ProfileMenuItem("Facebook", icon = Icons.Default.Facebook, iconColor = Color(0xFF1877F2)) }
-            item { ProfileMenuItem("Instagram", icon = Icons.Default.CameraAlt, iconColor = Color(0xFFE1306C)) }
-            item { ProfileMenuItem("Youtube", icon = Icons.Default.PlayCircleFilled, iconColor = Color(0xFFFF0000)) }
+            item { ProfileMenuItem("Instagram", iconRes = R.drawable.social_instagram, onClick = { context.openInstagramApp() }) }
+            item { ProfileMenuItem("Youtube", iconRes = R.drawable.social_youtube, onClick = { context.openYoutubeApp() }) }
 
             item {
                 Spacer(modifier = Modifier.height(24.dp))
@@ -1226,8 +2627,15 @@ fun ProfileMenuItem(
         modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (iconRes != null) { 
-            DrawableImage(iconRes, null, modifier = Modifier.size(32.dp).clip(CircleShape))
+        if (iconRes != null) {
+            DrawableImage(
+                iconRes,
+                contentDescription = title,
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Fit
+            )
             Spacer(Modifier.width(16.dp))
         } else if (icon != null) {
             Icon(icon, null, tint = iconColor, modifier = Modifier.size(32.dp))
@@ -1401,22 +2809,43 @@ fun WalletScreen(onBack: () -> Unit, onDepositClick: () -> Unit) {
 }
 
 @Composable
-fun HomeScreen(onOpenGundata: () -> Unit = {}) {
+fun HomeScreen(
+    onOpenGundata: () -> Unit = {},
+    onOpenCricket: () -> Unit = {},
+    onOpenCockfight: () -> Unit = {},
+    onWalletClick: () -> Unit = {},
+    onPromotionsClick: () -> Unit = {}
+) {
     var liveEnabled by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F5)),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF5F5F5)),
         state = listState
     ) {
-        item(key = "top_header", contentType = "header") { TopHeader(onDicePlayClick = onOpenGundata) }
-        item(key = "banner", contentType = "banner") { BannerCarousel() }
-        item(key = "popular_games", contentType = "games") { PopularGamesSection(onGundataClick = onOpenGundata) }
+        item(key = "top_header", contentType = "header") {
+            TopHeader(
+                onDicePlayClick = onOpenGundata,
+                onCricketClick = onOpenCricket,
+                onCockfightClick = onOpenCockfight,
+                onWalletClick = onWalletClick
+            )
+        }
+        item(key = "banner", contentType = "banner") { BannerCarousel(homeListState = listState) }
+        item(key = "popular_games", contentType = "games") {
+            PopularGamesSection(
+                onGundataClick = onOpenGundata,
+                onCricketClick = onOpenCricket,
+                onCockfightClick = onOpenCockfight,
+                onPromotionsClick = onPromotionsClick
+            )
+        }
         item(key = "live_header", contentType = "live_header") {
             LiveCockFightHeader(liveEnabled = liveEnabled, onLiveChange = { liveEnabled = it })
         }
         if (liveEnabled) {
-            item(key = "filter", contentType = "filter") { FilterBar() }
-            item(key = "live_match", contentType = "match") { LiveMatchCard() }
+            item(key = "live_match", contentType = "match") { LiveMatchCard(onClick = onOpenCockfight) }
         } else {
             item(key = "live_off", contentType = "placeholder") {
                 Surface(
@@ -1477,16 +2906,37 @@ fun HomeScreen(onOpenGundata: () -> Unit = {}) {
 }
 
 @Composable
-fun TopHeader(onDicePlayClick: () -> Unit = {}) {
+fun TopHeader(
+    onDicePlayClick: () -> Unit = {},
+    onCricketClick: () -> Unit = {},
+    onCockfightClick: () -> Unit = {},
+    onWalletClick: () -> Unit = {}
+) {
     Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             DrawableImage(R.drawable.gamelogo, "Logo", modifier = Modifier.size(50.dp).clip(CircleShape).border(1.dp, Color.LightGray, CircleShape), contentScale = ContentScale.Crop)
             Spacer(Modifier.width(8.dp))
-            HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight)
+            HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight, onClick = onCockfightClick)
             HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata, onClick = onDicePlayClick)
-            HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket)
+            HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket, onClick = onCricketClick)
         }
-        Surface(color = OrangePrimary, shape = RoundedCornerShape(8.dp), modifier = Modifier.height(40.dp)) { Row(modifier = Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Wallet, null, tint = Color.Black); Spacer(Modifier.width(8.dp)); Text("₹0", color = Color.Black, fontWeight = FontWeight.Bold) } }
+        Surface(
+            color = OrangePrimary,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+                .height(40.dp)
+                .clickable { onWalletClick() },
+            shadowElevation = 0.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Wallet, contentDescription = "Wallet", tint = Color.Black)
+                Spacer(Modifier.width(8.dp))
+                Text("₹0", color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
@@ -1515,7 +2965,7 @@ fun HeaderIconItem(label: String, icon: ImageVector? = null, imageRes: Int? = nu
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BannerCarousel() {
+fun BannerCarousel(homeListState: LazyListState) {
     val banners = remember {
         listOf(
             R.drawable.banner_home_1,
@@ -1523,13 +2973,20 @@ fun BannerCarousel() {
             R.drawable.banner_home_3
         )
     }
-    val pagerState = rememberPagerState(pageCount = { banners.size })
+    val rowState = rememberLazyListState()
+    val snapFling = rememberSnapFlingBehavior(lazyListState = rowState)
+    // LazyRow (horizontal) inside LazyColumn (vertical) avoids HorizontalPager nested-scroll fighting
+    // the feed. Do not advance while the home list is scrolling.
     LaunchedEffect(banners.size) {
         if (banners.size <= 1) return@LaunchedEffect
         while (true) {
             delay(3000)
-            val next = (pagerState.currentPage + 1) % banners.size
-            pagerState.scrollToPage(next)
+            while (homeListState.isScrollInProgress) {
+                delay(48)
+            }
+            val current = rowState.firstVisibleItemIndex.coerceIn(0, banners.lastIndex)
+            val next = (current + 1) % banners.size
+            rowState.scrollToItem(next)
         }
     }
     Box(
@@ -1540,22 +2997,40 @@ fun BannerCarousel() {
             .clip(RoundedCornerShape(12.dp))
             .background(Color.LightGray)
     ) {
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            DrawableImage(
-                banners[page],
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
+        LazyRow(
+            state = rowState,
+            modifier = Modifier.fillMaxSize(),
+            flingBehavior = snapFling,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items(
+                count = banners.size,
+                key = { index -> banners[index] }
+            ) { page ->
+                Box(
+                    modifier = Modifier
+                        .fillParentMaxWidth()
+                        .fillMaxHeight()
+                ) {
+                    DrawableImage(
+                        banners[page],
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-fun PopularGamesSection(onGundataClick: () -> Unit = {}) {
+fun PopularGamesSection(
+    onGundataClick: () -> Unit = {},
+    onCricketClick: () -> Unit = {},
+    onCockfightClick: () -> Unit = {},
+    onPromotionsClick: () -> Unit = {}
+) {
     Column(modifier = Modifier.padding(16.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Popular Games:", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black)
@@ -1563,22 +3038,41 @@ fun PopularGamesSection(onGundataClick: () -> Unit = {}) {
         }
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            GameIconItem("Cockfight", R.drawable.category_cockfight)
+            GameIconItem("Cockfight", R.drawable.category_cockfight, onClick = onCockfightClick)
             GameIconItem("Gundata", R.drawable.category_gunduata, onClick = onGundataClick)
-            GameIconItem("Cricket", R.drawable.category_cricket)
-            GameIconItem("Promotions", R.drawable.category_promotions)
+            GameIconItem(
+                "Cricket",
+                R.drawable.category_cricket,
+                onClick = onCricketClick,
+                hideSoonBadge = true
+            )
+            GameIconItem("Promotions", R.drawable.category_promotions, onClick = onPromotionsClick)
         }
     }
 }
 
 @Composable
-fun GameIconItem(label: String, imageRes: Int, isSoon: Boolean = false, onClick: (() -> Unit)? = null) {
+fun GameIconItem(
+    label: String,
+    imageRes: Int,
+    onClick: (() -> Unit)? = null,
+    hideSoonBadge: Boolean = false
+) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
     ) {
-        Box {
-            Surface(modifier = Modifier.size(70.dp), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 0.dp) {
+        Box(
+            modifier = Modifier
+                .size(70.dp)
+                .clip(RoundedCornerShape(12.dp))
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(12.dp),
+                color = Color.White,
+                shadowElevation = 0.dp
+            ) {
                 DrawableImage(
                     imageRes,
                     contentDescription = label,
@@ -1588,7 +3082,16 @@ fun GameIconItem(label: String, imageRes: Int, isSoon: Boolean = false, onClick:
                     contentScale = ContentScale.Crop
                 )
             }
-            if (isSoon) Surface(color = OrangePrimary, shape = RoundedCornerShape(4.dp), modifier = Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-4).dp)) { Text("Soon", color = Color.Black, fontSize = 8.sp, modifier = Modifier.padding(horizontal = 4.dp)) }
+            if (hideSoonBadge) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 3.dp, end = 3.dp)
+                        .width(44.dp)
+                        .height(20.dp)
+                        .background(Color(0xFFECECEC), RoundedCornerShape(6.dp))
+                )
+            }
         }
     }
 }
@@ -1621,16 +3124,16 @@ fun LiveCockFightHeader(liveEnabled: Boolean, onLiveChange: (Boolean) -> Unit) {
 }
 
 @Composable
-fun FilterBar() {
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).background(Color.White, RoundedCornerShape(4.dp)).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Surface(color = OrangePrimary, shape = RoundedCornerShape(4.dp)) { Text("24/7", color = Color.Black, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp), fontSize = 12.sp) }
-        Spacer(Modifier.width(16.dp)); Text("Telugu", color = Color.Black, fontSize = 14.sp)
-    }
-}
-
-@Composable
-fun LiveMatchCard() {
-    Card(modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
+fun LiveMatchCard(onClick: () -> Unit = {}) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1713,7 +3216,7 @@ private fun HenVideoCard(
         modifier = modifier.clickable { },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Black),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             DrawableImage(
