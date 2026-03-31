@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local SDK path (machine-specific)
+local.properties
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Built artifacts
+*.apk
+*.aar
+*.ap_
+*.aab
+*.dex
+
+# Keystores
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+
+# JVM heap dumps
+*.hprof
+
+# Decompiled APK output (not source-of-truth; huge)
+kokoroko_decoded/
+sikwin_decoded/
+*_decoded/
