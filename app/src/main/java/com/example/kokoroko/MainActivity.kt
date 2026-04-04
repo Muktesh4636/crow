@@ -56,37 +56,62 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import coil.compose.AsyncImage
-import coil.request.CachePolicy
 import coil.request.ImageRequest
-import coil.size.Size as CoilSize
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.kokoroko.BuildConfig
 import com.example.kokoroko.R
 import com.example.kokoroko.ui.theme.KokorokoTheme
 import com.example.kokoroko.ui.theme.OrangePrimary
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 private const val PKG_PHONEPE = "com.phonepe.app"
 private const val PKG_GPay = "com.google.android.apps.nbu.paisa.user"
 private const val PKG_PAYTM = "net.one97.paytm"
 
-/** Live cricket feed: https://gunduata.club/api/cricket/live/ */
-private const val CRICKET_ODDS_API_URL = "https://gunduata.club/api/cricket/live/"
+/** Wallet screen: warm brown ink (readable, no black/charcoal) */
+private val WalletInkWarm = Color(0xFF6D4C41)
+
+/**
+ * Backend API origin (scheme + host, no trailing slash).
+ * Update this when you set your production domain; all API URLs are derived from it.
+ */
+private const val API_BASE_URL = "https://fight.pravoo.in"
+
+/** Joins [API_BASE_URL] with a path (leading `/` optional). */
+private fun apiUrl(path: String): String {
+    val base = API_BASE_URL.trimEnd('/')
+    val p = path.trim().let { if (it.startsWith("/")) it else "/$it" }
+    return base + p
+}
+
+/** Live cricket feed */
+private val CRICKET_ODDS_API_URL = apiUrl("/api/cricket/live/")
 
 private val cricketOddsHttpClient: OkHttpClient =
     OkHttpClient.Builder()
@@ -96,6 +121,876 @@ private val cricketOddsHttpClient: OkHttpClient =
         .callTimeout(20, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+
+private data class MaintenanceStatusResponse(
+    val maintenance: Boolean,
+    val remainingHours: Int,
+    val remainingMinutes: Int
+)
+
+/** Public endpoint; on failure returns null (app continues — fail open). */
+private suspend fun fetchMaintenanceStatus(): MaintenanceStatusResponse? =
+    withContext(Dispatchers.IO) {
+        try {
+            val req =
+                Request.Builder()
+                    .url(MAINTENANCE_STATUS_URL)
+                    .header("Accept", "application/json")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || text.isBlank()) return@withContext null
+                val root = JSONObject(text)
+                val j = root.optJSONObject("data") ?: root
+                MaintenanceStatusResponse(
+                    maintenance = j.optBoolean("maintenance", false),
+                    remainingHours = j.optInt("remaining_hours", 0).coerceAtLeast(0),
+                    remainingMinutes = j.optInt("remaining_minutes", 0).coerceAtLeast(0)
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+private data class GameVersionResponse(
+    val versionCode: Int,
+    val versionName: String,
+    val downloadUrl: String,
+    val forceUpdate: Boolean
+)
+
+/** Public endpoint; null if request fails (fail open — no update prompt). */
+private suspend fun fetchGameVersion(): GameVersionResponse? =
+    withContext(Dispatchers.IO) {
+        try {
+            val req =
+                Request.Builder()
+                    .url(GAME_VERSION_URL)
+                    .header("Accept", "application/json")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || text.isBlank()) return@withContext null
+                val root = JSONObject(text)
+                val j = root.optJSONObject("data") ?: root
+                GameVersionResponse(
+                    versionCode = j.optIntValue("version_code", 0),
+                    versionName = j.optString("version_name", "").trim(),
+                    downloadUrl = j.optString("download_url", "").trim(),
+                    forceUpdate = j.optBoolean("force_update", false)
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+private val AUTH_LOGIN_URL = apiUrl("/api/auth/login/")
+private val AUTH_WALLET_URL = apiUrl("/api/auth/wallet/")
+/** Deposit / payout method rows: GPAY, BANK, QR, PHONEPE, PAYTM, UPI, … */
+private val AUTH_PAYMENT_DETAILS_URL = apiUrl("/api/auth/payment-details/")
+private val AUTH_PAYMENT_METHODS_URL = apiUrl("/api/auth/payment-methods/")
+private val AUTH_PROFILE_URL = apiUrl("/api/auth/profile/")
+private val AUTH_LOGOUT_URL = apiUrl("/api/auth/logout/")
+private val AUTH_BANK_DETAILS_URL = apiUrl("/api/auth/bank-details/")
+private val AUTH_WITHDRAW_INITIATE_URL = apiUrl("/api/auth/withdraws/initiate/")
+private val AUTH_DEPOSITS_MINE_URL = apiUrl("/api/auth/deposits/mine/")
+private val AUTH_WITHDRAWS_MINE_URL = apiUrl("/api/auth/withdraws/mine/")
+private val SUPPORT_CONTACTS_API_URL = apiUrl("/api/support/contacts/")
+private val MAINTENANCE_STATUS_URL = apiUrl("/api/maintenance/status/")
+private val GAME_VERSION_URL = apiUrl("/api/game/version/")
+
+private const val PREFS_AUTH = "auth_prefs"
+private const val PREFS_AUTH_TOKEN_KEY = "access_token"
+
+private object AuthTokenStore {
+    @Volatile
+    var accessToken: String? = null
+
+    fun load(context: Context) {
+        accessToken = context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
+            .getString(PREFS_AUTH_TOKEN_KEY, null)
+    }
+
+    fun save(context: Context, token: String) {
+        accessToken = token
+        context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
+            .edit().putString(PREFS_AUTH_TOKEN_KEY, token).apply()
+    }
+
+    fun clear(context: Context) {
+        accessToken = null
+        context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
+            .edit().remove(PREFS_AUTH_TOKEN_KEY).apply()
+    }
+}
+
+private data class BankDetailsUi(
+    val accountHolder: String,
+    val bankName: String,
+    val accountNumber: String,
+    val ifsc: String,
+    val branch: String = ""
+)
+
+/** Parsed from [AUTH_WALLET_URL] — balances, bank, UPI/QR, and optional payment method rows */
+private data class WalletApiResult(
+    val bank: BankDetailsUi?,
+    val upiId: String?,
+    val qrImageUrl: String?,
+    val paymentMethods: List<WalletPaymentMethodItem>?,
+    val walletId: Int? = null,
+    /** Total balance (string or number from API, e.g. "1500.50") */
+    val balance: String? = null,
+    val unavailableBalance: String? = null,
+    val withdrawableBalance: String? = null
+)
+
+private fun JSONObject.optAmountString(vararg keys: String): String? {
+    for (k in keys) {
+        if (!has(k) || isNull(k)) continue
+        when (val v = opt(k)) {
+            is Number -> return v.toString()
+            is String -> return v.trim().takeIf { it.isNotBlank() }
+            else -> { }
+        }
+    }
+    return null
+}
+
+/** "1500.50" → "₹1,500.50" for display. */
+private fun formatRupeeBalanceForDisplay(raw: String?): String {
+    if (raw.isNullOrBlank()) return "₹0"
+    val t = raw.trim()
+    if (t.startsWith("₹")) return t
+    val num = t.removePrefix("₹").trim().replace(",", "").toDoubleOrNull()
+    return if (num != null) {
+        "₹" + String.format(Locale.US, "%,.2f", num)
+    } else {
+        "₹$t"
+    }
+}
+
+private data class WalletPaymentMethodItem(
+    val id: Int = 0,
+    val name: String,
+    val type: String,
+    val packageName: String? = null,
+    val deepLink: String? = null,
+    /** Per-method UPI / VPA when API returns one row per app (e.g. GPAY). */
+    val upiId: String? = null
+)
+
+private fun JSONObject.pickString(vararg keys: String): String? {
+    for (k in keys) {
+        if (!has(k) || isNull(k)) continue
+        val s = optString(k, "").trim()
+        if (s.isNotBlank()) return s
+    }
+    return null
+}
+
+private fun JSONObject.optIntValue(key: String, default: Int = 0): Int {
+    if (!has(key) || isNull(key)) return default
+    return when (val v = opt(key)) {
+        is Int -> v
+        is Long -> v.toInt()
+        is Number -> v.toInt()
+        is String -> v.toIntOrNull() ?: default
+        else -> default
+    }
+}
+
+private fun resolvePaymentMediaUrl(path: String): String {
+    val p = path.trim()
+    if (p.isEmpty()) return p
+    if (p.startsWith("http://", ignoreCase = true) || p.startsWith("https://", ignoreCase = true)) return p
+    val base = API_BASE_URL.trimEnd('/')
+    return if (p.startsWith("/")) base + p else "$base/$p"
+}
+
+private fun parsePaymentMethodsArray(arr: JSONArray): List<WalletPaymentMethodItem> {
+    val out = ArrayList<WalletPaymentMethodItem>()
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        val name = o.pickString("name", "title", "label") ?: continue
+        val type = o.pickString("type", "app", "id")?.lowercase(Locale.US) ?: "custom"
+        val pkg = o.pickString("package", "package_name", "android_package")
+        val deep = o.pickString("deep_link", "url", "link")
+        val rowUpi = o.pickString("upi_id", "upi", "vpa")
+        out.add(WalletPaymentMethodItem(name = name, type = type, packageName = pkg, deepLink = deep, upiId = rowUpi))
+    }
+    return out
+}
+
+/** True when array rows use `method_type` (GPAY, BANK, QR, …). */
+private fun isPaymentDetailsMethodArray(arr: JSONArray): Boolean =
+    arr.length() > 0 && arr.optJSONObject(0)?.has("method_type") == true
+
+/**
+ * Parsed from an array of payment detail objects (see API: GPAY with upi_id, BANK with account fields, QR with qr_image).
+ */
+private fun parsePaymentDetailsArray(arr: JSONArray): WalletApiResult {
+    var bank: BankDetailsUi? = null
+    var qrUrl: String? = null
+    var defaultUpi: String? = null
+    val methodItems = ArrayList<WalletPaymentMethodItem>()
+
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        if (!o.optBoolean("is_active", true)) continue
+        val rowId = o.optIntValue("id")
+        val mt = o.optString("method_type", "").trim().uppercase(Locale.US)
+        when (mt) {
+            "BANK" -> {
+                val holder = o.optString("account_name", "").trim()
+                val bn = o.optString("bank_name", "").trim()
+                val acc = o.optString("account_number", "").trim()
+                val ifsc = o.optString("ifsc_code", "").trim()
+                if (holder.isNotBlank() || bn.isNotBlank() || acc.isNotBlank() || ifsc.isNotBlank()) {
+                    bank = BankDetailsUi(holder, bn, acc, ifsc, "")
+                }
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = o.optString("name", "Bank Account").ifBlank { "Bank Account" }, type = "bank"))
+            }
+            "QR" -> {
+                val path = o.pickString("qr_image", "qr_url", "qr_code")?.trim()
+                if (!path.isNullOrBlank()) qrUrl = resolvePaymentMediaUrl(path)
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = o.optString("name", "QR Code").ifBlank { "QR Code" }, type = "qr"))
+            }
+            "GPAY", "GOOGLE_PAY" -> {
+                val name = o.optString("name", "Google Pay").ifBlank { "Google Pay" }
+                val upi = o.optString("upi_id", "").trim()
+                val link = o.optString("link", "").trim()
+                if (defaultUpi.isNullOrBlank() && upi.isNotBlank()) defaultUpi = upi
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = name, type = "gpay", deepLink = link.ifBlank { null }, upiId = upi.ifBlank { null }))
+            }
+            "PHONEPE" -> {
+                val name = o.optString("name", "PhonePe").ifBlank { "PhonePe" }
+                val upi = o.optString("upi_id", "").trim()
+                val link = o.optString("link", "").trim()
+                if (defaultUpi.isNullOrBlank() && upi.isNotBlank()) defaultUpi = upi
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = name, type = "phonepe", deepLink = link.ifBlank { null }, upiId = upi.ifBlank { null }))
+            }
+            "PAYTM" -> {
+                val name = o.optString("name", "Paytm").ifBlank { "Paytm" }
+                val upi = o.optString("upi_id", "").trim()
+                val link = o.optString("link", "").trim()
+                if (defaultUpi.isNullOrBlank() && upi.isNotBlank()) defaultUpi = upi
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = name, type = "paytm", deepLink = link.ifBlank { null }, upiId = upi.ifBlank { null }))
+            }
+            "UPI" -> {
+                val name = o.optString("name", "UPI").ifBlank { "UPI" }
+                val upi = o.optString("upi_id", "").trim()
+                val link = o.optString("link", "").trim()
+                if (defaultUpi.isNullOrBlank() && upi.isNotBlank()) defaultUpi = upi
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = name, type = "upi", deepLink = link.ifBlank { null }, upiId = upi.ifBlank { null }))
+            }
+            else -> {
+                val upi = o.optString("upi_id", "").trim()
+                val link = o.optString("link", "").trim()
+                val name = o.optString("name", mt.ifBlank { "Pay" }).ifBlank { "Pay" }
+                if (defaultUpi.isNullOrBlank() && upi.isNotBlank()) defaultUpi = upi
+                val normType = when {
+                    mt.contains("GPAY") || mt.contains("GOOGLE") -> "gpay"
+                    mt.contains("PHONE") -> "phonepe"
+                    mt.contains("PAYTM") -> "paytm"
+                    else -> mt.lowercase(Locale.US).ifBlank { "upi" }
+                }
+                methodItems.add(WalletPaymentMethodItem(id = rowId, name = name, type = normType, deepLink = link.ifBlank { null }, upiId = upi.ifBlank { null }))
+            }
+        }
+    }
+
+    return WalletApiResult(
+        bank = bank,
+        upiId = defaultUpi,
+        qrImageUrl = qrUrl,
+        paymentMethods = methodItems.takeIf { it.isNotEmpty() }
+    )
+}
+
+private fun mergeWalletApiResults(detail: WalletApiResult, legacy: WalletApiResult): WalletApiResult =
+    WalletApiResult(
+        bank = detail.bank ?: legacy.bank,
+        upiId = detail.upiId ?: legacy.upiId,
+        qrImageUrl = detail.qrImageUrl ?: legacy.qrImageUrl,
+        paymentMethods = detail.paymentMethods?.takeIf { it.isNotEmpty() } ?: legacy.paymentMethods,
+        walletId = detail.walletId ?: legacy.walletId,
+        balance = detail.balance ?: legacy.balance,
+        unavailableBalance = detail.unavailableBalance ?: legacy.unavailableBalance,
+        withdrawableBalance = detail.withdrawableBalance ?: legacy.withdrawableBalance
+    )
+
+private fun findPaymentDetailsArrayInRoot(root: JSONObject): JSONArray? {
+    val data = root.optJSONObject("data") ?: root.optJSONObject("wallet")
+    val candidates =
+        listOfNotNull(
+            root.optJSONArray("payment_details"),
+            root.optJSONArray("payment_methods"),
+            data?.optJSONArray("payment_details"),
+            data?.optJSONArray("payment_methods"),
+            root.optJSONArray("results"),
+            data?.optJSONArray("results")
+        )
+    return candidates.firstOrNull { arr -> isPaymentDetailsMethodArray(arr) }
+}
+
+private fun parseWalletApiResultLegacy(root: JSONObject): WalletApiResult {
+    val data = root.optJSONObject("data") ?: root.optJSONObject("wallet") ?: root
+    val bank = parseBankDetailsFromWalletJson(root)
+    val upiId =
+        data.pickString("upi_id", "upi", "vpa", "merchant_upi", "upi_address")
+            ?: root.pickString("upi_id", "upi", "vpa")
+    val qrUrlRaw =
+        data.pickString("qr_code", "qr_url", "qr_image", "qr_image_url", "payment_qr", "upi_qr")
+            ?: root.pickString("qr_url", "qr_code")
+    val qrUrl = qrUrlRaw?.takeIf { it.isNotBlank() }?.let { resolvePaymentMediaUrl(it) }
+    val arr =
+        data.optJSONArray("payment_methods")
+            ?: data.optJSONArray("methods")
+            ?: data.optJSONArray("upi_apps")
+            ?: root.optJSONArray("payment_methods")
+    val methods =
+        when {
+            arr == null || arr.length() == 0 -> null
+            isPaymentDetailsMethodArray(arr) -> null
+            else -> parsePaymentMethodsArray(arr)
+        }
+    val walletId = if (data.has("id")) data.optInt("id") else null
+    val balance = data.optAmountString("balance", "available_balance", "total_balance")
+    val unavailable = data.optAmountString("unavailable_balance", "locked_balance", "pending_balance")
+    val withdrawable = data.optAmountString("withdrawable_balance", "available_withdrawal")
+    return WalletApiResult(
+        bank = bank,
+        upiId = upiId,
+        qrImageUrl = qrUrl,
+        paymentMethods = methods,
+        walletId = walletId,
+        balance = balance,
+        unavailableBalance = unavailable,
+        withdrawableBalance = withdrawable
+    )
+}
+
+private fun parseWalletApiResult(root: JSONObject): WalletApiResult {
+    val detailArr = findPaymentDetailsArrayInRoot(root)
+    val fromDetails =
+        detailArr?.takeIf { isPaymentDetailsMethodArray(it) }?.let { parsePaymentDetailsArray(it) }
+    val legacy = parseWalletApiResultLegacy(root)
+    return if (fromDetails != null) mergeWalletApiResults(fromDetails, legacy) else legacy
+}
+
+private fun parseWalletResponseBody(text: String): WalletApiResult {
+    val t = text.trim()
+    if (t.isEmpty()) return WalletApiResult(null, null, null, null)
+    if (t.startsWith("[")) {
+        val arr = JSONArray(t)
+        return if (isPaymentDetailsMethodArray(arr)) {
+            parsePaymentDetailsArray(arr)
+        } else {
+            WalletApiResult(
+                bank = null,
+                upiId = null,
+                qrImageUrl = null,
+                paymentMethods = parsePaymentMethodsArray(arr).takeIf { it.isNotEmpty() }
+            )
+        }
+    }
+    return parseWalletApiResult(JSONObject(t))
+}
+
+private fun defaultWalletPaymentMethods(): List<WalletPaymentMethodItem> =
+    listOf(
+        WalletPaymentMethodItem(name = "PhonePe", type = "phonepe"),
+        WalletPaymentMethodItem(name = "Google Pay", type = "gpay"),
+        WalletPaymentMethodItem(name = "UPI ID", type = "upi"),
+        WalletPaymentMethodItem(name = "Paytm", type = "paytm")
+    )
+
+private fun parseBankDetailsFromWalletJson(root: JSONObject): BankDetailsUi? {
+    val data = root.optJSONObject("data") ?: root.optJSONObject("wallet") ?: root
+    val bank =
+        data.optJSONObject("bank_account")
+            ?: data.optJSONObject("bank")
+            ?: data.optJSONObject("bank_details")
+            ?: data.optJSONObject("user_bank")
+    val obj =
+        bank
+            ?: if (data.has("account_number") || data.has("ifsc")) data else null
+            ?: return null
+    fun pick(vararg keys: String): String {
+        for (k in keys) {
+            if (!obj.has(k) || obj.isNull(k)) continue
+            val v = obj.opt(k)
+            val s =
+                when (v) {
+                    is String -> v.trim()
+                    is Number -> v.toString()
+                    else -> v?.toString()?.trim()?.takeIf { it != "null" } ?: ""
+                }
+            if (s.isNotBlank()) return s
+        }
+        return ""
+    }
+    val holder = pick("account_holder", "account_holder_name", "account_name", "holder_name", "beneficiary_name", "name")
+    val bankName = pick("bank_name", "bank", "bankName")
+    val acc = pick("account_number", "account_no", "acc_number", "accountNumber")
+    val ifsc = pick("ifsc", "ifsc_code", "IFSC", "ifscCode")
+    val branch = pick("branch", "branch_name", "branchName")
+    if (holder.isBlank() && bankName.isBlank() && acc.isBlank() && ifsc.isBlank()) return null
+    return BankDetailsUi(holder, bankName, acc, ifsc, branch)
+}
+
+private suspend fun fetchWalletFromApi(): Pair<WalletApiResult?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in to load payment details.")
+        try {
+            val req =
+                Request.Builder()
+                    .url(AUTH_WALLET_URL)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 ->
+                        Pair(null, "Session expired. Please sign in again.")
+                    !resp.isSuccessful || text.isBlank() ->
+                        Pair(null, "Could not load payment details (${resp.code}).")
+                    else -> Pair(parseWalletResponseBody(text), null)
+                }
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+/** Single call to [AUTH_PAYMENT_METHODS_URL] — no wallet balance needed for the payment screen. */
+private suspend fun fetchPaymentOptionsFromApi(): Pair<WalletApiResult?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in to load payment details.")
+        try {
+            val req = Request.Builder()
+                .url(AUTH_PAYMENT_METHODS_URL)
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (resp.isSuccessful && text.isNotBlank()) {
+                    return@withContext Pair(parseWalletResponseBody(text), null)
+                }
+                Pair(null, "Could not load payment methods (${resp.code}).")
+            }
+        } catch (e: Exception) {
+            Pair(null, "Network error: ${e.message}")
+        }
+    }
+
+private data class LoginResult(val success: Boolean, val errorMsg: String = "")
+
+private suspend fun postAuthLogin(context: Context, phone: String, password: String): LoginResult =
+    withContext(Dispatchers.IO) {
+        try {
+            val input = phone.trim()
+            val json = JSONObject().apply {
+                put("username", input)
+                put("password", password)
+            }
+            val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req = Request.Builder().url(AUTH_LOGIN_URL).post(body).header("Accept", "application/json").build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                val j = runCatching { JSONObject(text) }.getOrNull()
+                val apiError = j?.optString("error", "")?.takeIf { it.isNotBlank() }
+                if (!resp.isSuccessful) {
+                    return@withContext LoginResult(false, apiError ?: "Login failed (HTTP ${resp.code})")
+                }
+                if (apiError != null) return@withContext LoginResult(false, apiError)
+                val access = j?.optString("access", "")?.ifBlank { j.optString("token", "") }.orEmpty()
+                if (access.isNotBlank()) {
+                    AuthTokenStore.save(context, access)
+                    return@withContext LoginResult(true)
+                }
+                LoginResult(false, "No token in response. Please contact support.")
+            }
+        } catch (e: Exception) {
+            LoginResult(false, "Network error: ${e.message}")
+        }
+    }
+
+/** Matches GET/POST [AUTH_PROFILE_URL] — gender is MALE | FEMALE | OTHER | null. */
+private data class ProfileDetailsApi(
+    val id: Int,
+    val username: String,
+    val email: String,
+    val phoneNumber: String,
+    val gender: String?,
+    val isStaff: Boolean
+)
+
+/** UI labels for gender radios; maps to API enum on save. */
+private fun profileGenderApiToUi(raw: String?): String? {
+    if (raw.isNullOrBlank()) return null
+    return when (raw.trim().uppercase(Locale.US)) {
+        "MALE", "M" -> "Male"
+        "FEMALE", "F" -> "Female"
+        "OTHER" -> "Other"
+        else -> {
+            val g = raw.trim().lowercase(Locale.US)
+            when {
+                g in listOf("f", "female", "woman", "2") -> "Female"
+                g in listOf("m", "male", "man", "1") -> "Male"
+                else -> "Other"
+            }
+        }
+    }
+}
+
+private fun profileGenderUiToApi(ui: String?): String? =
+    when (ui) {
+        "Male" -> "MALE"
+        "Female" -> "FEMALE"
+        "Other" -> "OTHER"
+        else -> null
+    }
+
+private fun parseProfileFromJson(root: JSONObject): ProfileDetailsApi {
+    val data = root.optJSONObject("data") ?: root.optJSONObject("profile") ?: root.optJSONObject("user") ?: root
+    val id = data.optInt("id", 0)
+    val username =
+        data.pickString("username", "name", "full_name", "display_name").orEmpty().trim()
+    val phone = data.pickString("phone_number", "phone", "mobile", "contact_number").orEmpty().trim()
+    val email = data.pickString("email", "email_address").orEmpty().trim()
+    val genderApi: String? =
+        when {
+            !data.has("gender") || data.isNull("gender") -> null
+            else -> data.optString("gender", "").trim().takeIf { it.isNotBlank() }
+        }
+    val isStaff = data.optBoolean("is_staff", false)
+    return ProfileDetailsApi(
+        id = id,
+        username = username,
+        email = email,
+        phoneNumber = phone,
+        gender = genderApi,
+        isStaff = isStaff
+    )
+}
+
+private suspend fun fetchAuthProfile(): Pair<ProfileDetailsApi?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in to load your profile.")
+        try {
+            val req =
+                Request.Builder()
+                    .url(AUTH_PROFILE_URL)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 -> Pair(null, "Session expired. Please sign in again.")
+                    !resp.isSuccessful || text.isBlank() ->
+                        Pair(null, "Could not load profile (${resp.code}).")
+                    else -> Pair(parseProfileFromJson(JSONObject(text)), null)
+                }
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+/** Partial update via POST [AUTH_PROFILE_URL] — writable: username, email, phone_number, gender. */
+private suspend fun postAuthProfile(
+    username: String,
+    phoneNumber: String,
+    email: String,
+    genderUi: String?
+): Pair<Boolean, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(false, "Sign in required.")
+        try {
+            val json =
+                JSONObject().apply {
+                    put("username", username.trim())
+                    put("phone_number", phoneNumber.trim())
+                    put("email", email.trim())
+                    profileGenderUiToApi(genderUi)?.let { put("gender", it) }
+                }
+            val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req =
+                Request.Builder()
+                    .url(AUTH_PROFILE_URL)
+                    .post(body)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return@withContext Pair(true, null)
+                val err =
+                    try {
+                        val j = JSONObject(text)
+                        j.optString("detail", "").ifBlank {
+                            j.optString("error", "").ifBlank {
+                                j.keys().asSequence().firstOrNull()?.let { k ->
+                                    j.optJSONArray(k)?.let { arr ->
+                                        if (arr.length() > 0) arr.getString(0) else null
+                                    }
+                                }.orEmpty()
+                            }
+                        }
+                    } catch (_: Exception) {
+                        text
+                    }
+                Pair(false, err.ifBlank { "Update failed (${resp.code})" })
+            }
+        } catch (e: Exception) {
+            Pair(false, e.message)
+        }
+    }
+
+/** POST [AUTH_LOGOUT_URL] with Bearer token, then clear [AuthTokenStore] (always clears locally). */
+private suspend fun performAuthLogout(context: Context) {
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+        if (token != null) {
+            try {
+                val body = "{}".toRequestBody("application/json; charset=utf-8".toMediaType())
+                val req =
+                    Request.Builder()
+                        .url(AUTH_LOGOUT_URL)
+                        .post(body)
+                        .header("Authorization", "Bearer $token")
+                        .header("Accept", "application/json")
+                        .header("Content-Type", "application/json")
+                        .build()
+                cricketOddsHttpClient.newCall(req).execute().use { }
+            } catch (_: Exception) {
+            }
+        }
+        AuthTokenStore.clear(context)
+    }
+}
+
+/** Saved payout / withdrawal destination from [AUTH_BANK_DETAILS_URL] */
+private data class AuthBankDetailsApi(
+    val accountName: String,
+    val bankName: String,
+    val accountNumber: String,
+    val ifscCode: String,
+    val upiId: String,
+    val isDefault: Boolean
+) {
+    fun toBankDetailsUi(): BankDetailsUi =
+        BankDetailsUi(accountName, bankName, accountNumber, ifscCode, "")
+
+    fun toBankDetailsUiOrNull(): BankDetailsUi? {
+        val b = toBankDetailsUi()
+        if (b.accountHolder.isBlank() && b.bankName.isBlank() && b.accountNumber.isBlank() && b.ifsc.isBlank()) {
+            return null
+        }
+        return b
+    }
+}
+
+private data class WithdrawInitiateResult(
+    val id: Int,
+    val amount: Int,
+    val status: String,
+    val withdrawalMethod: String,
+    val withdrawalDetails: String
+)
+
+private fun parseAuthBankDetailsBody(body: String): AuthBankDetailsApi? {
+    val t = body.trim()
+    if (t.isEmpty()) return null
+    val root: JSONObject =
+        when {
+            t.startsWith("[") -> {
+                val arr = JSONArray(t)
+                if (arr.length() == 0) return null
+                arr.getJSONObject(0)
+            }
+            else -> {
+                val j = JSONObject(t)
+                when {
+                    j.has("data") && j.optJSONObject("data") != null -> j.getJSONObject("data")
+                    (j.optJSONArray("results")?.length() ?: 0) > 0 -> j.getJSONArray("results").getJSONObject(0)
+                    else -> j
+                }
+            }
+        }
+    return AuthBankDetailsApi(
+        accountName = root.optString("account_name", "").trim(),
+        bankName = root.optString("bank_name", "").trim(),
+        accountNumber = root.optString("account_number", "").trim(),
+        ifscCode = root.optString("ifsc_code", "").trim(),
+        upiId = root.optString("upi_id", "").trim(),
+        isDefault = root.optBoolean("is_default", false)
+    )
+}
+
+private suspend fun fetchAuthBankDetails(): Pair<AuthBankDetailsApi?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in to load bank details.")
+        try {
+            val req =
+                Request.Builder()
+                    .url(AUTH_BANK_DETAILS_URL)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 -> Pair(null, "Session expired. Please sign in again.")
+                    !resp.isSuccessful || text.isBlank() ->
+                        Pair(null, "Could not load bank details (${resp.code}).")
+                    else -> Pair(parseAuthBankDetailsBody(text), null)
+                }
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+private suspend fun postWithdrawInitiate(
+    amount: Int,
+    withdrawalMethod: String,
+    withdrawalDetails: String
+): Pair<WithdrawInitiateResult?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in required.")
+        if (amount <= 0) return@withContext Pair(null, "Enter a valid amount.")
+        if (withdrawalDetails.isBlank()) return@withContext Pair(null, "Add withdrawal destination details.")
+        try {
+            val json =
+                JSONObject().apply {
+                    put("amount", amount)
+                    put("withdrawal_method", withdrawalMethod)
+                    put("withdrawal_details", withdrawalDetails)
+                }
+            val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req =
+                Request.Builder()
+                    .url(AUTH_WITHDRAW_INITIATE_URL)
+                    .post(body)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val err =
+                        try {
+                            JSONObject(text).optString("detail", "").ifBlank {
+                                JSONObject(text).optString("error", "")
+                            }
+                        } catch (_: Exception) {
+                            text
+                        }
+                    return@withContext Pair(null, err.ifBlank { "Withdrawal failed (${resp.code})" })
+                }
+                val j = JSONObject(text)
+                Pair(
+                    WithdrawInitiateResult(
+                        id = j.optInt("id", -1),
+                        amount = j.optInt("amount", amount),
+                        status = j.optString("status", ""),
+                        withdrawalMethod = j.optString("withdrawal_method", withdrawalMethod),
+                        withdrawalDetails = j.optString("withdrawal_details", withdrawalDetails)
+                    ),
+                    null
+                )
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+private val AUTH_DEPOSIT_UPLOAD_URL = apiUrl("/api/auth/deposits/upload-proof/")
+
+private data class DepositUploadResult(
+    val id: Int,
+    val amount: String,
+    val status: String,
+    val paymentMethod: Int
+)
+
+private suspend fun postDepositUploadProof(
+    context: android.content.Context,
+    imageUri: android.net.Uri,
+    amount: String,
+    paymentMethodId: Int
+): Pair<DepositUploadResult?, String?> = withContext(Dispatchers.IO) {
+    val token = AuthTokenStore.accessToken
+        ?: return@withContext Pair(null, "Sign in required.")
+    val amountInt = amount.toIntOrNull() ?: 0
+    if (amountInt < 100) return@withContext Pair(null, "Minimum deposit amount is ₹100.")
+    try {
+        val stream = context.contentResolver.openInputStream(imageUri)
+            ?: return@withContext Pair(null, "Could not read screenshot file.")
+        val bytes = stream.readBytes()
+        stream.close()
+        val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+        val ext = if (mimeType.contains("png", ignoreCase = true)) "png" else "jpg"
+        val fileBody = bytes.toRequestBody(mimeType.toMediaType())
+        val multipart = okhttp3.MultipartBody.Builder()
+            .setType(okhttp3.MultipartBody.FORM)
+            .addFormDataPart("screenshot", "screenshot.$ext", fileBody)
+            .addFormDataPart("amount", amountInt.toString())
+            .addFormDataPart("payment_method", paymentMethodId.toString())
+            .build()
+        val req = Request.Builder()
+            .url(AUTH_DEPOSIT_UPLOAD_URL)
+            .post(multipart)
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $token")
+            .build()
+        cricketOddsHttpClient.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                val msg = try {
+                    JSONObject(text).optString("error", "").ifBlank {
+                        JSONObject(text).optString("detail", "")
+                    }
+                } catch (_: Exception) { text }
+                return@withContext Pair(null, msg.ifBlank { "Upload failed (${resp.code})" })
+            }
+            val j = JSONObject(text)
+            Pair(
+                DepositUploadResult(
+                    id = j.optInt("id", -1),
+                    amount = j.optString("amount", amountInt.toString()),
+                    status = j.optString("status", "PENDING"),
+                    paymentMethod = j.optInt("payment_method", paymentMethodId)
+                ),
+                null
+            )
+        }
+    } catch (e: Exception) {
+        Pair(null, e.message ?: "Network error")
+    }
+}
 
 /** IPL / cricket screen: light blue & pink panels; accent for badges & buttons. */
 private val CricketOddsAccent = Color(0xFF42A5F5)
@@ -390,25 +1285,108 @@ private fun formatOdd(item: JSONObject, vararg keys: String): String {
     return "-"
 }
 
-/** WhatsApp / Telegram: digits only, international (91 = India + 987654321). */
+/** Fallback when /api/support/contacts/ fails or returns empty */
 private const val CONTACT_PHONE_WHATSAPP_TELEGRAM = "91987654321"
 
-private fun Context.openWhatsAppToContact() {
+private data class SupportContactsUi(
+    val whatsappNumber: String?,
+    val telegram: String?,
+    val facebookUrl: String?,
+    val instagramUrl: String?,
+    val youtubeUrl: String?
+)
+
+private fun JSONObject.optTrimmedUrlOrNull(vararg keys: String): String? {
+    for (k in keys) {
+        val s = optString(k, "").trim()
+        if (s.isNotBlank()) return s
+    }
+    return null
+}
+
+private suspend fun fetchSupportContacts(): SupportContactsUi? =
+    withContext(Dispatchers.IO) {
+        try {
+            val token = AuthTokenStore.accessToken
+            val reqBuilder =
+                Request.Builder()
+                    .url(SUPPORT_CONTACTS_API_URL)
+                    .header("Accept", "application/json")
+            if (!token.isNullOrBlank()) {
+                reqBuilder.header("Authorization", "Bearer $token")
+            }
+            val req = reqBuilder.get().build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || text.isBlank()) return@withContext null
+                val root = JSONObject(text)
+                val j = root.optJSONObject("data") ?: root
+                val wa =
+                    j.optString("whatsapp_number", "")
+                        .ifBlank { j.optString("whatsapp", "") }
+                        .trim()
+                        .ifBlank { null }
+                val tg = j.optString("telegram", "").trim().ifBlank { null }
+                SupportContactsUi(
+                    whatsappNumber = wa,
+                    telegram = tg,
+                    facebookUrl = j.optTrimmedUrlOrNull("facebook", "facebook_url"),
+                    instagramUrl = j.optTrimmedUrlOrNull("instagram", "instagram_url"),
+                    youtubeUrl = j.optTrimmedUrlOrNull("youtube", "youtube_url")
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+private fun phoneDigitsForChat(raw: String): String = raw.filter { it.isDigit() }
+
+/** Opens https/http URL in a browser; returns true if an activity was started. */
+private fun Context.tryOpenExternalUrl(url: String?): Boolean {
+    val u = url?.trim()?.takeIf { it.isNotBlank() } ?: return false
+    return try {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
+/** @param apiPhone optional number from [fetchSupportContacts]; falls back to [CONTACT_PHONE_WHATSAPP_TELEGRAM] */
+private fun Context.openWhatsAppToContact(apiPhone: String? = null) {
+    val raw = apiPhone?.trim()?.takeIf { it.isNotBlank() } ?: CONTACT_PHONE_WHATSAPP_TELEGRAM
+    if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+        if (!tryOpenExternalUrl(raw)) {
+            Toast.makeText(this, "Unable to open WhatsApp link", Toast.LENGTH_SHORT).show()
+        }
+        return
+    }
     try {
-        val uri = Uri.parse("https://api.whatsapp.com/send?phone=$CONTACT_PHONE_WHATSAPP_TELEGRAM")
+        val digits = phoneDigitsForChat(raw).ifEmpty { CONTACT_PHONE_WHATSAPP_TELEGRAM }
+        val uri = Uri.parse("https://api.whatsapp.com/send?phone=$digits")
         startActivity(Intent(Intent.ACTION_VIEW, uri))
     } catch (e: Exception) {
         Toast.makeText(this, "Unable to open WhatsApp", Toast.LENGTH_SHORT).show()
     }
 }
 
-private fun Context.openTelegramToContact() {
-    val tg = Uri.parse("tg://msg?to=+$CONTACT_PHONE_WHATSAPP_TELEGRAM")
+/** @param apiPhone optional handle, number, or t.me URL from [fetchSupportContacts]; falls back to [CONTACT_PHONE_WHATSAPP_TELEGRAM] */
+private fun Context.openTelegramToContact(apiPhone: String? = null) {
+    val raw = apiPhone?.trim()?.takeIf { it.isNotBlank() } ?: CONTACT_PHONE_WHATSAPP_TELEGRAM
+    if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+        if (!tryOpenExternalUrl(raw)) {
+            Toast.makeText(this, "Unable to open Telegram link", Toast.LENGTH_SHORT).show()
+        }
+        return
+    }
+    val digits = phoneDigitsForChat(raw).ifEmpty { CONTACT_PHONE_WHATSAPP_TELEGRAM }
+    val tg = Uri.parse("tg://msg?to=+$digits")
     try {
         startActivity(Intent(Intent.ACTION_VIEW, tg))
     } catch (e: Exception) {
         try {
-            val https = Uri.parse("https://t.me/+${CONTACT_PHONE_WHATSAPP_TELEGRAM}")
+            val https = Uri.parse("https://t.me/+$digits")
             startActivity(Intent(Intent.ACTION_VIEW, https))
         } catch (e2: Exception) {
             Toast.makeText(this, "Unable to open Telegram", Toast.LENGTH_SHORT).show()
@@ -450,7 +1428,6 @@ private fun Context.openYoutubeApp() {
     }
 }
 
-/** Drawables loaded via Coil; stable px sizing + remembered request reduce flicker during fast scroll. */
 @Composable
 private fun DrawableImage(
     resId: Int,
@@ -458,40 +1435,12 @@ private fun DrawableImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop
 ) {
-    val context = LocalContext.current
-    BoxWithConstraints(modifier = modifier) {
-        val decodeSize = remember(constraints.maxWidth, constraints.maxHeight) {
-            fun bucket(px: Int): Int = (((px.coerceIn(32, 2048) + 16) / 32) * 32).coerceIn(32, 2048)
-            when {
-                constraints.hasBoundedWidth && constraints.hasBoundedHeight ->
-                    CoilSize(bucket(constraints.maxWidth), bucket(constraints.maxHeight))
-                constraints.hasBoundedWidth -> {
-                    val w = bucket(constraints.maxWidth)
-                    CoilSize(w, w)
-                }
-                constraints.hasBoundedHeight -> {
-                    val h = bucket(constraints.maxHeight)
-                    CoilSize(h, h)
-                }
-                else -> CoilSize(512, 512)
-            }
-        }
-        val imageRequest = remember(resId, decodeSize, context) {
-            ImageRequest.Builder(context)
-                .data(resId)
-                .size(decodeSize)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .crossfade(false)
-                .build()
-        }
-        AsyncImage(
-            model = imageRequest,
-            contentDescription = contentDescription,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = contentScale
-        )
-    }
+    Image(
+        painter = painterResource(id = resId),
+        contentDescription = contentDescription,
+        modifier = modifier,
+        contentScale = contentScale
+    )
 }
 
 private fun Context.launchAppOrToast(packageName: String) {
@@ -507,32 +1456,313 @@ private fun Context.launchAppOrToast(packageName: String) {
     }
 }
 
-private fun Context.launchUpiPaymentChooser() {
+private fun Context.launchUpiPaymentChooser(pa: String? = null, amount: String = "") {
+    val payee = pa?.trim()?.takeIf { it.isNotBlank() }
+    if (payee == null) {
+        Toast.makeText(this, "No UPI ID configured for this payment method.", Toast.LENGTH_SHORT).show()
+        return
+    }
     try {
-        val uri =
-            Uri.parse("upi://pay?pa=test@upi&pn=Hen%20Fight&am=1.00&cu=INR&tn=Wallet%20payment")
-        val intent = Intent(Intent.ACTION_VIEW, uri)
+        val amt = amount.trim().toDoubleOrNull()?.let { "%.2f".format(it) } ?: ""
+        val uriBuilder = Uri.Builder()
+            .scheme("upi")
+            .authority("pay")
+            .appendQueryParameter("pa", payee)
+            .appendQueryParameter("pn", "Hen Fight")
+            .appendQueryParameter("cu", "INR")
+            .appendQueryParameter("tn", "Wallet Deposit")
+        if (amt.isNotBlank()) uriBuilder.appendQueryParameter("am", amt)
+        val intent = Intent(Intent.ACTION_VIEW, uriBuilder.build())
         startActivity(Intent.createChooser(intent, "Complete payment with"))
     } catch (e: Exception) {
         Toast.makeText(this, "No UPI app available", Toast.LENGTH_SHORT).show()
     }
 }
 
+private fun Context.launchWalletPaymentMethod(item: WalletPaymentMethodItem, apiUpiId: String?, amount: String = "") {
+    val vpa = item.upiId?.trim()?.takeIf { it.isNotBlank() } ?: apiUpiId
+    val t = item.type.lowercase(Locale.US)
+    val pkg = when {
+        t.contains("phonepe") -> PKG_PHONEPE
+        t.contains("gpay") || t.contains("google") -> PKG_GPay
+        t.contains("paytm") -> PKG_PAYTM
+        else -> null
+    }
+    when {
+        pkg != null -> launchUpiWithPackage(vpa, pkg, amount)
+        t == "upi" || t.contains("upi_id") -> launchUpiPaymentChooser(vpa, amount)
+        !item.deepLink.isNullOrBlank() ->
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(item.deepLink)))
+            } catch (e: Exception) {
+                Toast.makeText(this, "Unable to open link", Toast.LENGTH_SHORT).show()
+            }
+        !item.packageName.isNullOrBlank() -> launchAppOrToast(item.packageName)
+        else -> launchUpiPaymentChooser(vpa, amount)
+    }
+}
+
+private fun Context.launchUpiWithPackage(pa: String?, packageName: String, amount: String = "") {
+    val payee = pa?.trim()?.takeIf { it.isNotBlank() }
+    if (payee == null) {
+        Toast.makeText(this, "No UPI ID configured for this payment method.", Toast.LENGTH_SHORT).show()
+        return
+    }
+    try {
+        val amt = amount.trim().toDoubleOrNull()?.let { "%.2f".format(it) } ?: ""
+        val uriBuilder = Uri.Builder()
+            .scheme("upi")
+            .authority("pay")
+            .appendQueryParameter("pa", payee)
+            .appendQueryParameter("pn", "Hen Fight")
+            .appendQueryParameter("cu", "INR")
+            .appendQueryParameter("tn", "Wallet Deposit")
+        if (amt.isNotBlank()) uriBuilder.appendQueryParameter("am", amt)
+        val intent = Intent(Intent.ACTION_VIEW, uriBuilder.build()).apply {
+            setPackage(packageName)
+        }
+        if (packageManager.getLaunchIntentForPackage(packageName) != null) {
+            startActivity(intent)
+        } else {
+            Toast.makeText(this, "App not installed", Toast.LENGTH_SHORT).show()
+        }
+    } catch (e: Exception) {
+        launchUpiPaymentChooser(pa, amount)
+    }
+}
+
+private fun iconForWalletPaymentType(type: String): ImageVector {
+    return when (type.lowercase(Locale.US)) {
+        "phonepe" -> Icons.Default.AccountBalanceWallet
+        "gpay", "google_pay" -> Icons.Default.Payment
+        "paytm" -> Icons.Default.AccountBalance
+        "upi" -> Icons.Default.QrCodeScanner
+        else -> Icons.Default.Payment
+    }
+}
+
+private fun colorForWalletPaymentType(type: String): Color {
+    return when (type.lowercase(Locale.US)) {
+        "phonepe" -> Color(0xFF673AB7)
+        "gpay", "google_pay" -> Color(0xFF4285F4)
+        "paytm" -> Color(0xFF00B9F1)
+        "upi" -> Color(0xFF4CAF50)
+        else -> OrangePrimary
+    }
+}
+
+@Composable
+private fun MaintenanceModeScreen(initialHours: Int, initialMinutes: Int) {
+    val initialTotal =
+        remember(initialHours, initialMinutes) {
+            (initialHours * 3600 + initialMinutes * 60).coerceAtLeast(0)
+        }
+    var remainingSeconds by remember(initialHours, initialMinutes) {
+        mutableStateOf((initialHours * 3600 + initialMinutes * 60).coerceAtLeast(0))
+    }
+    LaunchedEffect(initialHours, initialMinutes) {
+        var left = (initialHours * 3600 + initialMinutes * 60).coerceAtLeast(0)
+        while (left > 0) {
+            delay(1000)
+            left--
+            remainingSeconds = left
+        }
+    }
+    val h = remainingSeconds / 3600
+    val m = (remainingSeconds % 3600) / 60
+    val sec = remainingSeconds % 60
+    val timeStr = String.format(Locale.US, "%02d:%02d:%02d", h, m, sec)
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFF1A1A1A)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 28.dp)
+        ) {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = null,
+                tint = OrangePrimary,
+                modifier = Modifier.size(56.dp)
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "Maintenance mode",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "The app is temporarily unavailable while we perform maintenance. Please check back soon.",
+                fontSize = 15.sp,
+                color = Color.White.copy(alpha = 0.88f),
+                textAlign = TextAlign.Center,
+                lineHeight = 22.sp
+            )
+            Spacer(Modifier.height(28.dp))
+            Text(
+                "Estimated time remaining",
+                fontSize = 13.sp,
+                color = Color.White.copy(alpha = 0.55f)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                timeStr,
+                fontSize = 40.sp,
+                fontWeight = FontWeight.Bold,
+                color = OrangePrimary,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 1.sp
+            )
+            if (initialTotal == 0) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "No ETA provided — we’ll be back shortly.",
+                    fontSize = 13.sp,
+                    color = Color.White.copy(alpha = 0.65f),
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    info: GameVersionResponse,
+    onDownload: () -> Unit,
+    onLater: (() -> Unit)?
+) {
+    Dialog(
+        onDismissRequest = { onLater?.invoke() },
+        properties =
+            DialogProperties(
+                dismissOnBackPress = onLater != null,
+                dismissOnClickOutside = onLater != null
+            )
+    ) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(
+                    "Update available",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color.Black
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Version ${info.versionName} is ready (build ${info.versionCode}).",
+                    fontSize = 14.sp,
+                    color = Color.DarkGray,
+                    lineHeight = 20.sp
+                )
+                if (info.forceUpdate) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "This update is required to continue using the app.",
+                        fontSize = 13.sp,
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (onLater != null) {
+                        TextButton(onClick = onLater) {
+                            Text("Later", color = Color.Gray)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Button(
+                        onClick = onDownload,
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                    ) {
+                        Text("Download", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
+    var maintenanceOn by remember { mutableStateOf(false) }
+    var remHours by remember { mutableStateOf(0) }
+    var remMinutes by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        val s = fetchMaintenanceStatus()
+        if (s != null && s.maintenance) {
+            maintenanceOn = true
+            remHours = s.remainingHours
+            remMinutes = s.remainingMinutes
+        }
+    }
+    when {
+        maintenanceOn ->
+            MaintenanceModeScreen(initialHours = remHours, initialMinutes = remMinutes)
+        else -> content()
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AuthTokenStore.load(this)
         setContent {
             KokorokoTheme {
-                var currentScreen by remember { mutableStateOf("splash") }
+                AppRootWithMaintenanceGate {
+                    val activityContext = LocalContext.current
+                    val alreadyLoggedIn = AuthTokenStore.accessToken != null
+                    var currentScreen by remember {
+                        mutableStateOf(if (alreadyLoggedIn) "home" else "splash")
+                    }
 
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    when (currentScreen) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        val logoutScope = rememberCoroutineScope()
+                        when (currentScreen) {
                         "splash" -> SplashScreen { currentScreen = "login" }
-                        "login" -> LoginScreen { currentScreen = "home" }
-                        "home" -> MainScreen(onLogout = { currentScreen = "login" })
+                        "login" -> LoginScreen(
+                            onLoginSuccess = { currentScreen = "home" },
+                            onSignUp = { currentScreen = "signup" }
+                        )
+                        "signup" -> SignupScreen(
+                            onBack = { currentScreen = "login" },
+                            onRegistered = {
+                                Toast.makeText(
+                                    activityContext,
+                                    "Account created. Please log in.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                currentScreen = "login"
+                            }
+                        )
+                        "home" ->
+                            MainScreen(
+                                onLogout = {
+                                    logoutScope.launch {
+                                        performAuthLogout(activityContext)
+                                        currentScreen = "login"
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -542,12 +1772,52 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
+    val context = LocalContext.current
     var selectedTab by remember { mutableStateOf("home") }
     var currentSubScreen by remember { mutableStateOf("main") }
+    /** Wallet deposit flow: `"upi"` = QR + UPI apps only; `"bank"` = bank details only */
+    var walletDepositMethod by remember { mutableStateOf("upi") }
+    var walletDepositAmount by remember { mutableStateOf("") }
+    var preloadedPaymentOptions by remember { mutableStateOf<WalletApiResult?>(null) }
+    var preloadedPaymentError by remember { mutableStateOf<String?>(null) }
+    var preloadedPaymentLoading by remember { mutableStateOf(false) }
+    var cachedSupportContacts by remember { mutableStateOf<SupportContactsUi?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (cachedSupportContacts == null) {
+            cachedSupportContacts = fetchSupportContacts()
+        }
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != "wallet") return@LaunchedEffect
+        preloadedPaymentLoading = true
+        preloadedPaymentError = null
+        val (w, err) = fetchPaymentOptionsFromApi()
+        preloadedPaymentLoading = false
+        preloadedPaymentOptions = w
+        preloadedPaymentError = err
+    }
+    var pendingVersion by remember { mutableStateOf<GameVersionResponse?>(null) }
+    var dismissedOptionalUpdate by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             CricketFeedStore.load()
+        }
+    }
+
+    /** Check for app updates while user is on the home tab (main stack). Re-runs when returning from Wallet/Profile/etc. */
+    LaunchedEffect(selectedTab, currentSubScreen) {
+        if (selectedTab != "home" || currentSubScreen != "main") return@LaunchedEffect
+        val v = fetchGameVersion()
+        if (v != null && v.versionCode > BuildConfig.VERSION_CODE) {
+            if (pendingVersion?.versionCode != v.versionCode) {
+                dismissedOptionalUpdate = false
+            }
+            pendingVersion = v
+        } else {
+            pendingVersion = null
         }
     }
 
@@ -557,20 +1827,31 @@ fun MainScreen(onLogout: () -> Unit) {
         selectedTab = "home"
     }
 
-    Scaffold(
-        bottomBar = {
-            if (currentSubScreen == "main" && selectedTab == "home") {
-                BottomNavigationBar(
-                    selectedTab = selectedTab,
-                    onTabSelected = { selectedTab = it }
-                )
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            bottomBar = {
+                if (currentSubScreen == "main" && selectedTab == "home") {
+                    BottomNavigationBar(
+                        selectedTab = selectedTab,
+                        onTabSelected = { selectedTab = it }
+                    )
+                }
             }
-        }
-    ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+        ) { paddingValues ->
+            Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
             when {
                 currentSubScreen == "payment_options" ->
-                    PaymentOptionsScreen(onBack = { currentSubScreen = "main" })
+                    PaymentOptionsScreen(
+                        onBack = {
+                            walletDepositMethod = "upi"
+                            currentSubScreen = "main"
+                        },
+                        walletDepositMethod = walletDepositMethod,
+                        depositAmount = walletDepositAmount,
+                        preloadedWallet = preloadedPaymentOptions,
+                        preloadedLoading = preloadedPaymentLoading,
+                        preloadedError = preloadedPaymentError
+                    )
                 currentSubScreen == "profile_details" ->
                     ProfileDetailsScreen(
                         onBack = { currentSubScreen = "main" },
@@ -587,14 +1868,8 @@ fun MainScreen(onLogout: () -> Unit) {
                             currentSubScreen = "main"
                         }
                     )
-                currentSubScreen == "reset_pin" ->
-                    ResetPinScreen(
-                        onBack = { currentSubScreen = "main" },
-                        onHome = {
-                            selectedTab = "home"
-                            currentSubScreen = "main"
-                        }
-                    )
+                currentSubScreen == "transactional_records" ->
+                    TransactionalRecordsScreen(onBack = { currentSubScreen = "main" })
                 currentSubScreen == "gundata_live" ->
                     GundataLiveScreen(
                         onBack = { currentSubScreen = "main" },
@@ -649,16 +1924,22 @@ fun MainScreen(onLogout: () -> Unit) {
                                 onPromotionsClick = { selectedTab = "promotion" }
                             )
                             "promotion" -> PromotionsScreen(onBack = { selectedTab = "home" })
-                            "wallet" -> WalletScreen(
-                                onBack = { selectedTab = "home" },
-                                onDepositClick = { currentSubScreen = "payment_options" }
-                            )
+                            "wallet" ->
+                                WalletScreen(
+                                    onBack = { selectedTab = "home" },
+                                    onDepositClick = { method, amount ->
+                                        walletDepositMethod = method
+                                        walletDepositAmount = amount
+                                        currentSubScreen = "payment_options"
+                                    }
+                                )
                             "profile" -> ProfileScreen(
                                 onBack = { selectedTab = "home" },
                                 onLogout = onLogout,
                                 onOpenProfileDetails = { currentSubScreen = "profile_details" },
                                 onOpenReferralEarn = { currentSubScreen = "referral" },
-                                onOpenResetPin = { currentSubScreen = "reset_pin" }
+                                onOpenTransactionalRecords = { currentSubScreen = "transactional_records" },
+                                supportContacts = cachedSupportContacts
                             )
                             else -> HomeScreen(
                                 onOpenGundata = { currentSubScreen = "gundata_live" },
@@ -670,6 +1951,25 @@ fun MainScreen(onLogout: () -> Unit) {
                         }
                     }
                 }
+            }
+        }
+        }
+
+        val pv = pendingVersion
+        if (pv != null && pv.downloadUrl.isNotBlank() && onHomeMain) {
+            val showUpdate = pv.forceUpdate || !dismissedOptionalUpdate
+            if (showUpdate) {
+                UpdateAvailableDialog(
+                    info = pv,
+                    onDownload = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pv.downloadUrl)))
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "Could not open download link", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onLater = if (pv.forceUpdate) null else ({ dismissedOptionalUpdate = true })
+                )
             }
         }
     }
@@ -972,8 +2272,8 @@ private fun CricketOddsFilterTabs(
 }
 
 @Composable
-private fun CricketLiveBlinkingDot() {
-    val infiniteTransition = rememberInfiniteTransition(label = "cricket_live_dot")
+private fun LiveStreamBlinkingDot() {
+    val infiniteTransition = rememberInfiniteTransition(label = "live_stream_dot")
     val dotAlpha by infiniteTransition.animateFloat(
         initialValue = 0.28f,
         targetValue = 1f,
@@ -999,7 +2299,7 @@ private fun CricketLiveStreamTopBar(modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        CricketLiveBlinkingDot()
+        LiveStreamBlinkingDot()
         Text(
             text = "LIVE",
             color = CricketStreamLiveRed,
@@ -1197,7 +2497,7 @@ fun CricketOddsScreen(onBack: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        CricketLiveBlinkingDot()
+                        LiveStreamBlinkingDot()
                         Text(
                             text = "LIVE",
                             color = CricketStreamLiveRed,
@@ -1256,6 +2556,11 @@ fun CockFightLiveScreen(
         )
     }
 
+    var cockfightWalletText by remember { mutableStateOf("₹0") }
+    LaunchedEffect(Unit) {
+        val (w, _) = fetchWalletFromApi()
+        cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
+    }
     Column(Modifier.fillMaxSize().background(CockDarkBg)) {
         Row(
             Modifier
@@ -1274,20 +2579,7 @@ fun CockFightLiveScreen(
                 fontSize = 15.sp,
                 letterSpacing = 0.6.sp
             )
-            Surface(
-                color = OrangePrimary,
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.height(40.dp).clickable { onWallet() }
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Wallet, null, tint = Color.Black, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("₹0", fontWeight = FontWeight.Bold, color = Color.Black)
-                }
-            }
+            WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
         }
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -1328,12 +2620,7 @@ fun CockFightLiveScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFE53935))
-                        )
+                        LiveStreamBlinkingDot()
                         Text(
                             text = "LIVE",
                             color = Color(0xFFE53935),
@@ -1582,245 +2869,45 @@ fun GundataLiveScreen(
     onOpenProfile: () -> Unit
 ) {
     BackHandler { onBack() }
-    var region by remember { mutableStateOf("andhra") }
-    var selectedDice by remember { mutableStateOf<Int?>(null) }
-    var selectedChip by remember { mutableStateOf(100) }
-    val chips = listOf(100, 200, 300, 500, 800, 1000)
-    var mainAction by remember { mutableStateOf("Please wait...") }
-    val diceWords = listOf("One", "Two", "Three", "Four", "Five", "Six")
-    val historyResults = listOf(3, 4, 1, 6, 2, 5, 4, 2)
-
-    Column(Modifier.fillMaxSize().background(Color.White)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        // Live stream placeholder — full screen black canvas
         Row(
-            Modifier.fillMaxWidth().padding(16.dp),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
-            }
-            Text("Gundata LIVE", fontWeight = FontWeight.Medium, fontSize = 18.sp, color = Color.DarkGray)
-            Surface(
-                color = OrangePrimary,
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.height(40.dp).clickable { onWallet() }
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Wallet, null, tint = Color.Black, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("₹0", fontWeight = FontWeight.Bold, color = Color.Black)
-                }
-            }
+            LiveStreamBlinkingDot()
+            Text(
+                text = "LIVE",
+                color = Color(0xFFE53935),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp
+            )
         }
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+        // Back button overlay
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
         ) {
-            item {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .padding(horizontal = 16.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFE53935))
-                        )
-                        Text(
-                            text = "LIVE",
-                            color = Color(0xFFE53935),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp
-                        )
-                    }
-                }
-            }
-
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Surface(
-                            color = if (region == "andhra") OrangePrimary else Color(0xFFF0F0F0),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.clickable { region = "andhra" }
-                        ) {
-                            Text(
-                                "Andhra",
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                color = if (region == "andhra") Color.White else Color.Black,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                        Surface(
-                            color = if (region == "telangana") OrangePrimary else Color(0xFFF0F0F0),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.clickable { region = "telangana" }
-                        ) {
-                            Text(
-                                "Telangana",
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                color = if (region == "telangana") Color.White else Color.Black,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                    IconButton(onClick = { }) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = "Sound", tint = Color.Black)
-                    }
-                }
-            }
-
-            item {
-                Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Select number (1–6)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = Color.Black
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (i in 0..2) {
-                            val n = i + 1
-                            GundataDiceCard(
-                                num = n,
-                                word = diceWords[i],
-                                emoji = GUNDATA_DICE_FACE[i],
-                                selected = selectedDice == n,
-                                onClick = { selectedDice = n },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (i in 3..5) {
-                            val n = i + 1
-                            GundataDiceCard(
-                                num = n,
-                                word = diceWords[i],
-                                emoji = GUNDATA_DICE_FACE[i],
-                                selected = selectedDice == n,
-                                onClick = { selectedDice = n },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            }
-
-            item {
-                LazyRow(
-                    Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(chips) { v ->
-                        val sel = selectedChip == v
-                        Surface(
-                            shape = CircleShape,
-                            color = if (sel) OrangePrimary else Color(0xFF424242),
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clickable { selectedChip = v },
-                            border = if (sel) BorderStroke(3.dp, Color.Black) else null
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Text(
-                                    "$v",
-                                    color = if (sel) Color.Black else Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    GundataSquareIconButton(icon = Icons.Default.Settings, onClick = onOpenProfile)
-                    GundataSquareIconButton(icon = Icons.Default.History) { mainAction = "History opened" }
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp)
-                            .clickable {
-                                mainAction = when (mainAction) {
-                                    "Please wait..." -> "Select amount (${selectedChip})"
-                                    else -> "Please wait..."
-                                }
-                            },
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFFE8E8E8),
-                        border = BorderStroke(1.dp, Color.LightGray)
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-                            Text(
-                                mainAction,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.Black,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                maxLines = 2
-                            )
-                        }
-                    }
-                    GundataSquareIconButton(icon = Icons.Default.Wallet) { onWallet() }
-                }
-            }
-
-            item {
-                Text(
-                    "Recent results",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = Color.Black,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.5f)
+            ) {
+                Icon(
+                    Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White,
+                    modifier = Modifier.padding(6.dp).size(22.dp)
                 )
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    itemsIndexed(historyResults) { index, result ->
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${9 + index}", fontSize = 11.sp, color = Color.Gray)
-                            Spacer(Modifier.height(4.dp))
-                            Surface(
-                                modifier = Modifier.size(36.dp),
-                                shape = RoundedCornerShape(4.dp),
-                                border = BorderStroke(1.dp, Color.LightGray),
-                                color = Color.White
-                            ) {
-                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                    Text("$result", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -1950,23 +3037,35 @@ fun SplashScreen(onTimeout: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LoginScreen(onLoginSuccess: () -> Unit) {
-    var pin by remember { mutableStateOf("") }
-    val correctPin = "4636"
+fun LoginScreen(
+    onLoginSuccess: () -> Unit,
+    onSignUp: () -> Unit = {}
+) {
+    var phone by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
-    LaunchedEffect(pin) {
-        if (pin.length == 4) {
-            if (pin == correctPin) {
-                onLoginSuccess()
-            } else {
-                delay(500)
-                pin = ""
-            }
-        }
-    }
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = Color.Black,
+        unfocusedTextColor = Color.Black,
+        disabledTextColor = Color.Black,
+        focusedBorderColor = Color.LightGray,
+        unfocusedBorderColor = Color.LightGray.copy(alpha = 0.7f),
+        focusedContainerColor = Color.White,
+        unfocusedContainerColor = Color.White,
+        cursorColor = Color.Black
+    )
 
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(
@@ -1979,7 +3078,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
             HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata)
             HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket)
         }
-        Spacer(modifier = Modifier.height(48.dp))
+        Spacer(modifier = Modifier.height(40.dp))
         DrawableImage(
             R.drawable.gamelogo,
             contentDescription = "Logo",
@@ -1987,49 +3086,330 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
             contentScale = ContentScale.Crop
         )
         Spacer(modifier = Modifier.height(20.dp))
-        Text("Login Password", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-        Text("Logout & login if you forgot your pin!", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(top = 6.dp))
-        Spacer(modifier = Modifier.height(18.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            repeat(4) { index ->
-                Surface(
-                    modifier = Modifier.size(48.dp).clickable { if (pin.length < 4) pin += correctPin[pin.length] },
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, Color.LightGray),
-                    color = Color.White
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        if (pin.length > index) Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(Color.Black))
+        Text("Login", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+        Text(
+            "Enter your phone number or username and password",
+            fontSize = 13.sp,
+            color = Color.Gray,
+            modifier = Modifier.padding(top = 6.dp),
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+
+        OutlinedTextField(
+            value = phone,
+            onValueChange = { phone = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Phone number or Username", color = Color.Gray) },
+            placeholder = { Text("e.g. 9876543210 or john123", color = Color.LightGray, fontSize = 14.sp) },
+            colors = fieldColors,
+            shape = RoundedCornerShape(12.dp),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Password", color = Color.Gray) },
+            colors = fieldColors,
+            shape = RoundedCornerShape(12.dp),
+            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            trailingIcon = {
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(
+                        imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                        tint = Color.DarkGray
+                    )
+                }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(22.dp))
+
+        if (errorMessage != null) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFFFFEBEE),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = errorMessage!!,
+                    color = Color(0xFFB71C1C),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .clickable(enabled = !isLoading) {
+                    if (phone.isBlank()) {
+                        errorMessage = "Please enter your phone number."
+                        return@clickable
+                    }
+                    if (password.isBlank()) {
+                        errorMessage = "Please enter your password."
+                        return@clickable
+                    }
+                    errorMessage = null
+                    isLoading = true
+                    scope.launch {
+                        val result = postAuthLogin(context, phone, password)
+                        isLoading = false
+                        if (result.success) {
+                            onLoginSuccess()
+                        } else {
+                            errorMessage = result.errorMsg
+                        }
+                    }
+                },
+            shape = RoundedCornerShape(26.dp),
+            color = if (isLoading) Color.Gray else Color.Black
+        ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (isLoading) {
+                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 24.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Login", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
                     }
                 }
             }
         }
-        Spacer(modifier = Modifier.height(20.dp))
-        Row {
-            Text("Didn't remember code? ", fontSize = 13.sp, color = Color.Gray)
-            Text("Logout!", fontSize = 13.sp, color = OrangePrimary, fontWeight = FontWeight.Bold)
+
+        Spacer(modifier = Modifier.height(18.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Don't have an account? ", fontSize = 14.sp, color = Color.Gray)
+            Text(
+                "Sign up",
+                fontSize = 14.sp,
+                color = OrangePrimary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { onSignUp() }
+            )
         }
-        Spacer(modifier = Modifier.weight(1f))
-        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            Surface(modifier = Modifier.size(56.dp), shape = CircleShape, border = BorderStroke(1.dp, Color(0xFFFFEBEE)), color = Color.White) {
-                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.PowerSettingsNew, contentDescription = null, tint = Color.Red) }
+        Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SignupScreen(onBack: () -> Unit, onRegistered: () -> Unit) {
+    BackHandler { onBack() }
+    val context = LocalContext.current
+    var username by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var otp by remember { mutableStateOf("") }
+    var otpSendCount by remember { mutableStateOf(0) }
+    var passwordVisible by remember { mutableStateOf(false) }
+
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = Color.Black,
+        unfocusedTextColor = Color.Black,
+        disabledTextColor = Color.Black,
+        focusedBorderColor = Color.LightGray,
+        unfocusedBorderColor = Color.LightGray.copy(alpha = 0.7f),
+        focusedContainerColor = Color.White,
+        unfocusedContainerColor = Color.White,
+        cursorColor = Color.Black
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
             }
-            Spacer(modifier = Modifier.width(16.dp))
-            Surface(
-                modifier = Modifier.width(220.dp).height(56.dp).clickable(enabled = pin == correctPin) { onLoginSuccess() },
-                shape = RoundedCornerShape(28.dp),
-                color = if (pin == correctPin) Color.Black else Color.Gray
+            Text(
+                "Sign up",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            DrawableImage(
+                R.drawable.gamelogo,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(100.dp)
+                    .clip(CircleShape)
+                    .border(2.dp, Color.Black, CircleShape),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "Create your account",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
+            )
+            Text(
+                "Username, mobile, password & OTP",
+                fontSize = 13.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(top = 6.dp),
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it.take(32) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Username", color = Color.Gray) },
+                placeholder = { Text("Choose a username", color = Color.LightGray, fontSize = 14.sp) },
+                colors = fieldColors,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = phone,
+                onValueChange = { phone = it.filter { ch -> ch.isDigit() }.take(15) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Phone number", color = Color.Gray) },
+                placeholder = { Text("10-digit mobile number", color = Color.LightGray, fontSize = 14.sp) },
+                colors = fieldColors,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Password", color = Color.Gray) },
+                colors = fieldColors,
+                shape = RoundedCornerShape(12.dp),
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                            contentDescription = null,
+                            tint = Color.DarkGray
+                        )
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(modifier = Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Login", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
+                OutlinedTextField(
+                    value = otp,
+                    onValueChange = { otp = it.filter { ch -> ch.isDigit() }.take(6) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("OTP code", color = Color.Gray) },
+                    placeholder = { Text("6-digit code", color = Color.LightGray, fontSize = 14.sp) },
+                    colors = fieldColors,
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                TextButton(
+                    onClick = {
+                        val firstRequest = otpSendCount == 0
+                        otpSendCount++
+                        Toast.makeText(
+                            context,
+                            if (firstRequest) "Verification code sent (demo)" else "Code resent (demo)",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    modifier = Modifier.padding(top = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = if (otpSendCount == 0) "Get code" else "Resend",
+                        color = OrangePrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        maxLines = 1
+                    )
                 }
             }
-        }
-        Row(modifier = Modifier.padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.PlayCircle, contentDescription = null, tint = Color.Red, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Watch Tutorials", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .clickable { onRegistered() },
+                shape = RoundedCornerShape(26.dp),
+                color = OrangePrimary
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text("Create account", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(18.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 32.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Already have an account? ", fontSize = 14.sp, color = Color.Gray)
+                Text(
+                    "Log in",
+                    fontSize = 14.sp,
+                    color = OrangePrimary,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable { onBack() }
+                )
+            }
         }
     }
 }
@@ -2038,10 +3418,31 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
 @Composable
 fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
     BackHandler { onBack() }
-    var email by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var username by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
-    var gender by remember { mutableStateOf("Male") }
+    var email by remember { mutableStateOf("") }
+    /** "Male" | "Female" | "Other", or null if API gender unset. */
+    var gender by remember { mutableStateOf<String?>(null) }
+    var profileLoading by remember { mutableStateOf(true) }
+    var profileError by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        profileLoading = true
+        profileError = null
+        val (data, err) = fetchAuthProfile()
+        profileLoading = false
+        if (data != null) {
+            username = data.username
+            phone = data.phoneNumber
+            email = data.email
+            gender = profileGenderApiToUi(data.gender)
+        } else {
+            profileError = err
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(Color.White)) {
         Row(
@@ -2073,32 +3474,35 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(Modifier.height(8.dp))
+            if (profileLoading) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = OrangePrimary
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text("Loading profile…", fontSize = 14.sp, color = Color.Gray)
+                }
+            }
+            profileError?.let { err ->
+                Text(
+                    err,
+                    color = Color(0xFFC62828),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
             OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
+                value = username,
+                onValueChange = { username = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Email", color = Color.Gray) },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.Black,
-                    unfocusedTextColor = Color.Black,
-                    disabledTextColor = Color.Black,
-                    focusedBorderColor = Color.LightGray,
-                    unfocusedBorderColor = Color.LightGray.copy(alpha = 0.7f),
-                    focusedContainerColor = Color.White,
-                    unfocusedContainerColor = Color.White,
-                    cursorColor = Color.Black
-                ),
-                shape = RoundedCornerShape(12.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
-            )
-            Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Name", color = Color.Gray) },
+                enabled = !profileLoading,
+                label = { Text("Username", color = Color.Gray) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
                     unfocusedTextColor = Color.Black,
@@ -2117,6 +3521,7 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
                 onValueChange = { phone = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                enabled = !profileLoading,
                 label = { Text("Phone Number", color = Color.Gray) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
@@ -2131,17 +3536,42 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
                 shape = RoundedCornerShape(12.dp),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
             )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                enabled = !profileLoading,
+                label = { Text("Email", color = Color.Gray) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black,
+                    disabledTextColor = Color.Black,
+                    focusedBorderColor = Color.LightGray,
+                    unfocusedBorderColor = Color.LightGray.copy(alpha = 0.7f),
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    cursorColor = Color.Black
+                ),
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+            )
             Spacer(Modifier.height(24.dp))
             Text("Gender", color = Color.Black, fontWeight = FontWeight.Medium, fontSize = 16.sp)
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { gender = "Male" }
+                    modifier = Modifier.clickable(enabled = !profileLoading) { gender = "Male" }
                 ) {
                     RadioButton(
                         selected = gender == "Male",
                         onClick = { gender = "Male" },
+                        enabled = !profileLoading,
                         colors = RadioButtonDefaults.colors(
                             selectedColor = OrangePrimary,
                             unselectedColor = OrangePrimary
@@ -2151,11 +3581,12 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { gender = "Female" }
+                    modifier = Modifier.clickable(enabled = !profileLoading) { gender = "Female" }
                 ) {
                     RadioButton(
                         selected = gender == "Female",
                         onClick = { gender = "Female" },
+                        enabled = !profileLoading,
                         colors = RadioButtonDefaults.colors(
                             selectedColor = OrangePrimary,
                             unselectedColor = OrangePrimary
@@ -2163,12 +3594,53 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
                     )
                     Text("Female", color = Color.Black, fontSize = 16.sp)
                 }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable(enabled = !profileLoading) { gender = "Other" }
+                ) {
+                    RadioButton(
+                        selected = gender == "Other",
+                        onClick = { gender = "Other" },
+                        enabled = !profileLoading,
+                        colors = RadioButtonDefaults.colors(
+                            selectedColor = OrangePrimary,
+                            unselectedColor = OrangePrimary
+                        )
+                    )
+                    Text("Other", color = Color.Black, fontSize = 16.sp)
+                }
             }
             Spacer(Modifier.height(32.dp))
         }
 
         Button(
-            onClick = { },
+            onClick = {
+                scope.launch {
+                    saving = true
+                    val (ok, msg) = postAuthProfile(username, phone, email, gender)
+                    saving = false
+                    if (ok) {
+                        profileLoading = true
+                        profileError = null
+                        val (data, err) = fetchAuthProfile()
+                        profileLoading = false
+                        if (data != null) {
+                            username = data.username
+                            phone = data.phoneNumber
+                            email = data.email
+                            gender = profileGenderApiToUi(data.gender)
+                        } else {
+                            profileError = err
+                        }
+                    }
+                    Toast.makeText(
+                        context,
+                        if (ok) "Profile updated" else (msg ?: "Could not update profile"),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            enabled = !profileLoading && !saving,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
@@ -2176,9 +3648,17 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
             shape = RoundedCornerShape(28.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color.Black)
         ) {
-            Text("Update Details", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Spacer(Modifier.width(8.dp))
-            Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
+            if (saving) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Text("Update Details", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Spacer(Modifier.width(8.dp))
+                Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Color.White)
+            }
         }
     }
 }
@@ -2530,8 +4010,620 @@ fun ResetPinScreen(onBack: () -> Unit, onHome: () -> Unit) {
     }
 }
 
+private enum class TxRecordKind { Deposit, Withdraw }
+
+private enum class TxStatusFilter { All, Success, Failed }
+
+private data class DepositRecordApi(
+    val id: Int,
+    val amount: Int,
+    val status: String,
+    val screenshotUrl: String?,
+    val paymentMethod: Int?,
+    val adminNote: String?,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+private data class WithdrawRecordApi(
+    val id: Int,
+    val amount: Int,
+    val status: String,
+    val withdrawalMethod: String,
+    val withdrawalDetails: String,
+    val adminNote: String?,
+    val processedByName: String?,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+private fun parseDepositsResponse(text: String): List<DepositRecordApi> {
+    val t = text.trim()
+    if (t.isEmpty()) return emptyList()
+    val arr: JSONArray =
+        when {
+            t.startsWith("[") -> JSONArray(t)
+            else -> {
+                val root = JSONObject(t)
+                root.optJSONArray("results")
+                    ?: root.optJSONArray("data")
+                    ?: root.optJSONArray("deposits")
+                    ?: JSONArray()
+            }
+        }
+    val out = ArrayList<DepositRecordApi>()
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        out.add(parseDepositRecord(o))
+    }
+    return out
+}
+
+private fun parseDepositRecord(o: JSONObject): DepositRecordApi =
+    DepositRecordApi(
+        id = o.optIntValue("id", -1),
+        amount = o.optIntValue("amount", 0),
+        status = o.optString("status", "").trim(),
+        screenshotUrl = o.pickString("screenshot_url", "screenshot", "proof_url")?.trim()?.takeIf { it.isNotBlank() },
+        paymentMethod =
+            if (o.has("payment_method") && !o.isNull("payment_method")) {
+                o.optIntValue("payment_method")
+            } else {
+                null
+            },
+        adminNote = o.optString("admin_note", "").trim().takeIf { it.isNotBlank() },
+        createdAt = o.optString("created_at", "").trim(),
+        updatedAt = o.optString("updated_at", "").trim()
+    )
+
+private fun parseWithdrawalsResponse(text: String): List<WithdrawRecordApi> {
+    val t = text.trim()
+    if (t.isEmpty()) return emptyList()
+    val arr: JSONArray =
+        when {
+            t.startsWith("[") -> JSONArray(t)
+            else -> {
+                val root = JSONObject(t)
+                root.optJSONArray("results")
+                    ?: root.optJSONArray("data")
+                    ?: root.optJSONArray("withdraws")
+                    ?: root.optJSONArray("withdrawals")
+                    ?: JSONArray()
+            }
+        }
+    val out = ArrayList<WithdrawRecordApi>()
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        out.add(parseWithdrawRecord(o))
+    }
+    return out
+}
+
+private fun parseWithdrawRecord(o: JSONObject): WithdrawRecordApi =
+    WithdrawRecordApi(
+        id = o.optIntValue("id", -1),
+        amount = o.optIntValue("amount", 0),
+        status = o.optString("status", "").trim(),
+        withdrawalMethod = o.optString("withdrawal_method", "").trim(),
+        withdrawalDetails = o.optString("withdrawal_details", "").trim(),
+        adminNote = o.optString("admin_note", "").trim().takeIf { it.isNotBlank() },
+        processedByName = o.pickString("processed_by_name", "processed_by")?.trim()?.takeIf { it.isNotBlank() },
+        createdAt = o.optString("created_at", "").trim(),
+        updatedAt = o.optString("updated_at", "").trim()
+    )
+
+private suspend fun fetchMyWithdrawals(): Pair<List<WithdrawRecordApi>, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(emptyList(), "Sign in to view withdrawals.")
+        try {
+            val req =
+                Request.Builder()
+                    .url(AUTH_WITHDRAWS_MINE_URL)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 ->
+                        Pair(emptyList(), "Session expired. Please sign in again.")
+                    !resp.isSuccessful ->
+                        Pair(emptyList(), "Could not load withdrawals (${resp.code}).")
+                    else -> Pair(parseWithdrawalsResponse(text), null)
+                }
+            }
+        } catch (e: Exception) {
+            Pair(emptyList(), e.message ?: "Network error")
+        }
+    }
+
+private suspend fun fetchMyDeposits(): Pair<List<DepositRecordApi>, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(emptyList(), "Sign in to view deposits.")
+        try {
+            val req =
+                Request.Builder()
+                    .url(AUTH_DEPOSITS_MINE_URL)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 ->
+                        Pair(emptyList(), "Session expired. Please sign in again.")
+                    !resp.isSuccessful ->
+                        Pair(emptyList(), "Could not load deposits (${resp.code}).")
+                    else -> Pair(parseDepositsResponse(text), null)
+                }
+            }
+        } catch (e: Exception) {
+            Pair(emptyList(), e.message ?: "Network error")
+        }
+    }
+
+/** Deposit / withdraw list: Success vs Failed vs All (pending only in All). */
+private fun matchesTxStatusFilter(status: String, filter: TxStatusFilter): Boolean {
+    if (filter == TxStatusFilter.All) return true
+    val s = status.trim().uppercase(Locale.US)
+    val isSuccess =
+        s in
+            listOf(
+                "SUCCESS",
+                "COMPLETED",
+                "COMPLETE",
+                "APPROVED",
+                "SUCCESSFUL",
+                "DONE",
+                "CONFIRMED",
+                "PAID",
+                "PROCESSED"
+            )
+    val isFailed =
+        s in
+            listOf(
+                "FAILED",
+                "FAILURE",
+                "REJECTED",
+                "CANCELLED",
+                "CANCELED",
+                "DECLINED"
+            )
+    return when (filter) {
+        TxStatusFilter.Success -> isSuccess
+        TxStatusFilter.Failed -> isFailed
+        TxStatusFilter.All -> true
+    }
+}
+
+private fun formatIsoDateTimeShort(iso: String): String {
+    if (iso.isBlank()) return "—"
+    return try {
+        val clean = iso.replace("Z", "").substringBefore(".").trim()
+        val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        parser.timeZone = TimeZone.getTimeZone("UTC")
+        val parsed = parser.parse(clean) ?: return iso
+        SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(parsed)
+    } catch (_: Exception) {
+        iso
+    }
+}
+
 @Composable
-fun ProfileScreen(onBack: () -> Unit, onLogout: () -> Unit, onOpenProfileDetails: () -> Unit, onOpenReferralEarn: () -> Unit, onOpenResetPin: () -> Unit) {
+private fun DepositRecordRow(record: DepositRecordApi) {
+    val context = LocalContext.current
+    val statusColor =
+        when (record.status.trim().uppercase(Locale.US)) {
+            in listOf("SUCCESS", "COMPLETED", "APPROVED", "SUCCESSFUL", "DONE", "CONFIRMED", "COMPLETE") ->
+                Color(0xFF2E7D32)
+            in listOf("FAILED", "REJECTED", "CANCELLED", "DECLINED") -> Color(0xFFC62828)
+            else -> Color(0xFFF57C00)
+        }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFF5F5F5),
+        border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f))
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "₹${record.amount}",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black
+                )
+                Text(
+                    record.status.ifBlank { "—" },
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = statusColor
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                formatIsoDateTimeShort(record.createdAt),
+                fontSize = 12.sp,
+                color = Color.DarkGray
+            )
+            record.paymentMethod?.let { pm ->
+                Text(
+                    "Payment method #$pm",
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            record.adminNote?.let { note ->
+                Text(
+                    "Note: $note",
+                    fontSize = 12.sp,
+                    color = Color.DarkGray,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WithdrawRecordRow(record: WithdrawRecordApi) {
+    val statusColor =
+        when (record.status.trim().uppercase(Locale.US)) {
+            in listOf("SUCCESS", "COMPLETED", "APPROVED", "SUCCESSFUL", "DONE", "CONFIRMED", "COMPLETE", "PAID", "PROCESSED") ->
+                Color(0xFF2E7D32)
+            in listOf("FAILED", "REJECTED", "CANCELLED", "DECLINED") -> Color(0xFFC62828)
+            else -> Color(0xFFF57C00)
+        }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFF5F5F5),
+        border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f))
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "₹${record.amount}",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black
+                )
+                Text(
+                    record.status.ifBlank { "—" },
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = statusColor
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                formatIsoDateTimeShort(record.createdAt),
+                fontSize = 12.sp,
+                color = Color.DarkGray
+            )
+            if (record.withdrawalMethod.isNotBlank() || record.withdrawalDetails.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    buildString {
+                        if (record.withdrawalMethod.isNotBlank()) append(record.withdrawalMethod)
+                        if (record.withdrawalMethod.isNotBlank() && record.withdrawalDetails.isNotBlank()) {
+                            append(" · ")
+                        }
+                        append(record.withdrawalDetails)
+                    },
+                    fontSize = 13.sp,
+                    color = WalletInkWarm,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            record.processedByName?.let { name ->
+                Text(
+                    "Processed by: $name",
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            record.adminNote?.let { note ->
+                Text(
+                    "Note: $note",
+                    fontSize = 12.sp,
+                    color = Color.DarkGray,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TransactionalRecordsScreen(onBack: () -> Unit) {
+    BackHandler { onBack() }
+    var recordKind by remember { mutableStateOf(TxRecordKind.Deposit) }
+    var statusFilter by remember { mutableStateOf(TxStatusFilter.All) }
+    var deposits by remember { mutableStateOf<List<DepositRecordApi>>(emptyList()) }
+    var depositsLoading by remember { mutableStateOf(false) }
+    var depositsError by remember { mutableStateOf<String?>(null) }
+    var depositsRefreshNonce by remember { mutableStateOf(0) }
+    var withdrawals by remember { mutableStateOf<List<WithdrawRecordApi>>(emptyList()) }
+    var withdrawalsLoading by remember { mutableStateOf(false) }
+    var withdrawalsError by remember { mutableStateOf<String?>(null) }
+    var withdrawalsRefreshNonce by remember { mutableStateOf(0) }
+
+    LaunchedEffect(recordKind, depositsRefreshNonce) {
+        if (recordKind != TxRecordKind.Deposit) return@LaunchedEffect
+        depositsLoading = true
+        depositsError = null
+        val (list, err) = fetchMyDeposits()
+        deposits = list
+        depositsError = err
+        depositsLoading = false
+    }
+
+    LaunchedEffect(recordKind, withdrawalsRefreshNonce) {
+        if (recordKind != TxRecordKind.Withdraw) return@LaunchedEffect
+        withdrawalsLoading = true
+        withdrawalsError = null
+        val (list, err) = fetchMyWithdrawals()
+        withdrawals = list
+        withdrawalsError = err
+        withdrawalsLoading = false
+    }
+
+    val filteredDeposits =
+        remember(deposits, statusFilter) {
+            deposits.filter { matchesTxStatusFilter(it.status, statusFilter) }
+        }
+
+    val filteredWithdrawals =
+        remember(withdrawals, statusFilter) {
+            withdrawals.filter { matchesTxStatusFilter(it.status, statusFilter) }
+        }
+
+    Column(Modifier.fillMaxSize().background(Color.White)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
+            }
+            Text(
+                "Transactional records",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
+            )
+        }
+
+        Text(
+            "Type",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.DarkGray
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(TxRecordKind.Deposit to "Deposit", TxRecordKind.Withdraw to "Withdraw").forEach { (kind, label) ->
+                val sel = recordKind == kind
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { recordKind = kind },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (sel) OrangePrimary else Color(0xFFECEFF1),
+                    border = if (sel) BorderStroke(1.5.dp, OrangePrimary) else BorderStroke(1.dp, Color(0xFFB0BEC5))
+                ) {
+                    Text(
+                        text = label,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        textAlign = TextAlign.Center,
+                        fontSize = 14.sp,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                        color = if (sel) Color.White else Color(0xFF37474F)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            if (recordKind == TxRecordKind.Deposit) "Deposit status" else "Withdraw status",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.DarkGray
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(
+                TxStatusFilter.All to "All",
+                TxStatusFilter.Success to "Success",
+                TxStatusFilter.Failed to "Failed"
+            ).forEach { (filter, label) ->
+                val sel = statusFilter == filter
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { statusFilter = filter },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (sel) OrangePrimary.copy(alpha = 0.18f) else Color(0xFFF5F5F5),
+                    border = BorderStroke(
+                        width = if (sel) 1.5.dp else 1.dp,
+                        color = if (sel) OrangePrimary else Color.LightGray.copy(alpha = 0.6f)
+                    )
+                ) {
+                    Text(
+                        text = label,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                        textAlign = TextAlign.Center,
+                        fontSize = 12.sp,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                        color = if (sel) OrangePrimary else Color.DarkGray,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        val kindLabel = if (recordKind == TxRecordKind.Deposit) "deposit" else "withdraw"
+        val statusLabel = when (statusFilter) {
+            TxStatusFilter.All -> "all statuses"
+            TxStatusFilter.Success -> "successful"
+            TxStatusFilter.Failed -> "failed"
+        }
+        when (recordKind) {
+            TxRecordKind.Deposit ->
+                when {
+                    depositsLoading ->
+                        Box(
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = OrangePrimary)
+                        }
+                    depositsError != null ->
+                        Column(
+                            modifier =
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                depositsError!!,
+                                color = Color(0xFFC62828),
+                                textAlign = TextAlign.Center,
+                                fontSize = 15.sp,
+                                lineHeight = 22.sp
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            TextButton(onClick = { depositsRefreshNonce++ }) {
+                                Text("Retry", color = OrangePrimary, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    else ->
+                        LazyColumn(
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (filteredDeposits.isEmpty()) {
+                                item {
+                                    Text(
+                                        "No $kindLabel transactions for $statusLabel yet.",
+                                        fontSize = 15.sp,
+                                        color = Color.Gray,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 22.sp,
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp)
+                                    )
+                                }
+                            } else {
+                                items(filteredDeposits, key = { it.id }) { row ->
+                                    DepositRecordRow(row)
+                                }
+                            }
+                        }
+                }
+            TxRecordKind.Withdraw ->
+                when {
+                    withdrawalsLoading ->
+                        Box(
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = OrangePrimary)
+                        }
+                    withdrawalsError != null ->
+                        Column(
+                            modifier =
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                withdrawalsError!!,
+                                color = Color(0xFFC62828),
+                                textAlign = TextAlign.Center,
+                                fontSize = 15.sp,
+                                lineHeight = 22.sp
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            TextButton(onClick = { withdrawalsRefreshNonce++ }) {
+                                Text("Retry", color = OrangePrimary, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    else ->
+                        LazyColumn(
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (filteredWithdrawals.isEmpty()) {
+                                item {
+                                    Text(
+                                        "No $kindLabel transactions for $statusLabel yet.",
+                                        fontSize = 15.sp,
+                                        color = Color.Gray,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 22.sp,
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp)
+                                    )
+                                }
+                            } else {
+                                items(filteredWithdrawals, key = { it.id }) { row ->
+                                    WithdrawRecordRow(row)
+                                }
+                            }
+                        }
+                }
+        }
+    }
+}
+
+@Composable
+private fun ProfileScreen(
+    onBack: () -> Unit,
+    onLogout: () -> Unit,
+    onOpenProfileDetails: () -> Unit,
+    onOpenReferralEarn: () -> Unit,
+    onOpenTransactionalRecords: () -> Unit,
+    supportContacts: SupportContactsUi? = null
+) {
     BackHandler { onBack() }
     val context = LocalContext.current
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
@@ -2573,17 +4665,83 @@ fun ProfileScreen(onBack: () -> Unit, onLogout: () -> Unit, onOpenProfileDetails
 
             item { SectionHeader("Settings:") }
             item { ProfileMenuItem("Profile", icon = Icons.Default.Person, onClick = onOpenProfileDetails) }
-            item { ProfileMenuItem("Reset Login PIN", icon = Icons.Default.LockReset, onClick = onOpenResetPin) }
+            item {
+                ProfileMenuItem(
+                    "Transactional records",
+                    icon = Icons.Default.ReceiptLong,
+                    onClick = onOpenTransactionalRecords
+                )
+            }
             item { ProfileMenuItem("Referral & Earn", icon = Icons.Default.Share, onClick = onOpenReferralEarn) }
 
             item { Divider(modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp), color = Color.LightGray) }
 
             item { SectionHeader("Contact / Support:") }
-            item { ProfileMenuItem("Whatsapp", icon = Icons.Default.Chat, iconColor = Color(0xFF4CAF50), onClick = { context.openWhatsAppToContact() }) }
-            item { ProfileMenuItem("Telegram", icon = Icons.Default.Send, iconColor = Color(0xFF2196F3), onClick = { context.openTelegramToContact() }) }
-            item { ProfileMenuItem("Facebook", icon = Icons.Default.Facebook, iconColor = Color(0xFF1877F2)) }
-            item { ProfileMenuItem("Instagram", iconRes = R.drawable.social_instagram, onClick = { context.openInstagramApp() }) }
-            item { ProfileMenuItem("Youtube", iconRes = R.drawable.social_youtube, onClick = { context.openYoutubeApp() }) }
+            item {
+                ProfileMenuItem(
+                    "Whatsapp",
+                    icon = Icons.Default.Chat,
+                    iconColor = Color(0xFF4CAF50),
+                    onClick = { context.openWhatsAppToContact(supportContacts?.whatsappNumber) }
+                )
+            }
+            item {
+                ProfileMenuItem(
+                    "Telegram",
+                    icon = Icons.Default.Send,
+                    iconColor = Color(0xFF2196F3),
+                    onClick = { context.openTelegramToContact(supportContacts?.telegram) }
+                )
+            }
+            item {
+                ProfileMenuItem(
+                    "Facebook",
+                    icon = Icons.Default.Facebook,
+                    iconColor = Color(0xFF1877F2),
+                    onClick = {
+                        val url = supportContacts?.facebookUrl
+                        if (!url.isNullOrBlank()) {
+                            if (!context.tryOpenExternalUrl(url)) {
+                                Toast.makeText(context, "Unable to open Facebook", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "Facebook link not available", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
+            item {
+                ProfileMenuItem(
+                    "Instagram",
+                    iconRes = R.drawable.social_instagram,
+                    onClick = {
+                        val url = supportContacts?.instagramUrl
+                        if (!url.isNullOrBlank()) {
+                            if (!context.tryOpenExternalUrl(url)) {
+                                Toast.makeText(context, "Unable to open Instagram", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            context.openInstagramApp()
+                        }
+                    }
+                )
+            }
+            item {
+                ProfileMenuItem(
+                    "Youtube",
+                    iconRes = R.drawable.social_youtube,
+                    onClick = {
+                        val url = supportContacts?.youtubeUrl
+                        if (!url.isNullOrBlank()) {
+                            if (!context.tryOpenExternalUrl(url)) {
+                                Toast.makeText(context, "Unable to open YouTube", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            context.openYoutubeApp()
+                        }
+                    }
+                )
+            }
 
             item {
                 Spacer(modifier = Modifier.height(24.dp))
@@ -2647,163 +4805,1064 @@ fun ProfileMenuItem(
 }
 
 @Composable
-fun PaymentOptionsScreen(onBack: () -> Unit) {
-    BackHandler { onBack() }
-    val context = LocalContext.current
-    Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.Black) }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Payment Options", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-        }
-        LazyColumn(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-            item {
-                Card(modifier = Modifier.padding(16.dp).size(250.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)), elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(180.dp), tint = Color.Black)
-                            Text("Scan QR to Pay", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
-                        }
+private fun BankDetailLine(label: String, value: String) {
+    if (value.isBlank()) return
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Text(label, fontSize = 12.sp, color = Color.Gray)
+        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
+    }
+}
+
+@Composable
+private fun BankDetailsPanel(
+    loading: Boolean,
+    error: String?,
+    details: BankDetailsUi?,
+    onRetry: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFFFF8F0),
+        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Your bank details", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletInkWarm)
+            Spacer(Modifier.height(10.dp))
+            when {
+                loading -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = OrangePrimary,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text("Loading from server…", color = WalletInkWarm, fontSize = 14.sp)
                     }
                 }
+                error != null -> {
+                    Text(error, color = Color(0xFFC62828), fontSize = 14.sp)
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = onRetry) { Text("Retry", color = OrangePrimary) }
+                }
+                details != null -> {
+                    BankDetailLine("Account holder", details.accountHolder)
+                    BankDetailLine("Bank name", details.bankName)
+                    BankDetailLine("Account number", details.accountNumber)
+                    BankDetailLine("IFSC", details.ifsc)
+                    if (details.branch.isNotBlank()) BankDetailLine("Branch", details.branch)
+                }
             }
-            item { Text("Select Payment Method:", modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black) }
-            item { PaymentMethodItem("PhonePe", Icons.Default.AccountBalanceWallet, Color(0xFF673AB7)) { context.launchAppOrToast(PKG_PHONEPE) } }
-            item { PaymentMethodItem("Google Pay", Icons.Default.Payment, Color(0xFF4285F4)) { context.launchAppOrToast(PKG_GPay) } }
-            item { PaymentMethodItem("UPI ID", Icons.Default.QrCodeScanner, Color(0xFF4CAF50)) { context.launchUpiPaymentChooser() } }
-            item { PaymentMethodItem("Paytm", Icons.Default.AccountBalance, Color(0xFF00B9F1)) { context.launchAppOrToast(PKG_PAYTM) } }
-            item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }
 }
 
 @Composable
-fun PaymentMethodItem(name: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
-    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(72.dp).clickable { onClick() }, shape = RoundedCornerShape(12.dp), color = Color(0xFFF5F5F5), border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f))) {
-        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun UpiQrAndVpaFromApi(
+    loading: Boolean,
+    error: String?,
+    qrImageUrl: String?,
+    upiId: String?,
+    onRetry: () -> Unit
+) {
+    val ctx = LocalContext.current
+    Card(
+        modifier = Modifier.padding(16.dp).size(250.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            when {
+                loading -> CircularProgressIndicator(color = OrangePrimary)
+                error != null -> {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(12.dp)) {
+                        Text(error, color = Color(0xFFC62828), fontSize = 13.sp, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(onClick = onRetry) { Text("Retry", color = OrangePrimary) }
+                    }
+                }
+                !qrImageUrl.isNullOrBlank() ->
+                    AsyncImage(
+                        model =
+                            ImageRequest.Builder(ctx)
+                                .data(qrImageUrl)
+                                .crossfade(true)
+                                .build(),
+                        contentDescription = "Payment QR",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(8.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                else -> {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(160.dp), tint = Color.Black)
+                        Text("Scan QR to Pay", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                    }
+                }
+            }
+        }
+    }
+    if (!upiId.isNullOrBlank()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = Color(0xFFFFF8F0),
+            border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("UPI / VPA", fontSize = 12.sp, color = Color.Gray)
+                Text(upiId, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletInkWarm)
+            }
+        }
+    }
+}
+
+private val PaymentHeaderBlue = Color(0xFF3F51B5)
+private val PaymentAmountBlue = Color(0xFF1565C0)
+private val OrangePrimary = Color(0xFFFF6F00)
+
+@Composable
+private fun PaymentOptionsScreen(
+    onBack: () -> Unit,
+    walletDepositMethod: String = "upi",
+    depositAmount: String = "",
+    preloadedWallet: WalletApiResult? = null,
+    preloadedLoading: Boolean = false,
+    preloadedError: String? = null
+) {
+    BackHandler { onBack() }
+    val context = LocalContext.current
+    val isBankPath = walletDepositMethod == "bank"
+    var wallet by remember { mutableStateOf(preloadedWallet) }
+    var walletLoading by remember { mutableStateOf(preloadedWallet == null && preloadedLoading) }
+    var walletError by remember { mutableStateOf(preloadedError) }
+    var walletRetryNonce by remember { mutableStateOf(0) }
+    var selectedMethodType by remember { mutableStateOf<String?>(null) }
+    var selectedMethodId by remember { mutableStateOf<Int?>(null) }
+    var screenshotUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var timerSeconds by remember { mutableStateOf(600) }
+    var uploadSubmitting by remember { mutableStateOf(false) }
+    var uploadError by remember { mutableStateOf<String?>(null) }
+    val uploadScope = rememberCoroutineScope()
+
+    val screenshotLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri -> screenshotUri = uri; uploadError = null }
+
+    LaunchedEffect(Unit) {
+        while (timerSeconds > 0) { delay(1000); timerSeconds-- }
+    }
+
+    LaunchedEffect(walletRetryNonce) {
+        if (walletRetryNonce == 0 && preloadedWallet != null) return@LaunchedEffect
+        walletLoading = true; walletError = null; wallet = null
+        val (w, err) = fetchPaymentOptionsFromApi()
+        walletLoading = false; wallet = w; walletError = err
+    }
+
+    val bankDetails = wallet?.bank
+    val methodsToShow = (wallet?.paymentMethods ?: emptyList())
+        .filter { m ->
+            val t = m.type.lowercase(Locale.US)
+            t != "bank" && t != "qr" && !m.upiId.isNullOrBlank()
+        }
+        .distinctBy { it.type.lowercase(Locale.US) }
+
+    val qrImageUrl = wallet?.qrImageUrl
+    val timerMins = timerSeconds / 60
+    val timerSecs = timerSeconds % 60
+    val timerText = "%02d:%02d".format(timerMins, timerSecs)
+    val amountDisplay = depositAmount.ifBlank { "0" }
+
+    Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
+        // Header
+        Box(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 4.dp, vertical = 8.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
+            }
+            Text("Payment", modifier = Modifier.align(Alignment.Center), color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Surface(
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFFF0F0F0)
+            ) {
+                Text(timerText, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), color = Color.DarkGray, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Divider(color = Color(0xFFEEEEEE))
+
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            // Amount banner
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFFF7F7F7),
+                    border = BorderStroke(1.dp, Color(0xFFEEEEEE)),
+                    shadowElevation = 1.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Amount Payable", fontSize = 15.sp, color = Color.Gray)
+                        Spacer(Modifier.height(8.dp))
+                        Text("₹$amountDisplay", fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
+                        Spacer(Modifier.height(6.dp))
+                        Text("Fill in UTR after successful payment", fontSize = 13.sp, color = Color.Gray)
+                    }
+                }
+            }
+
+            // QR Code section (UPI path only)
+            if (!isBankPath && !qrImageUrl.isNullOrBlank()) {
+                item {
+                    Text("Scan QR To Pay", modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 2.dp) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context).data(qrImageUrl).crossfade(true).build(),
+                            contentDescription = "QR Code",
+                            modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(16.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { Toast.makeText(context, "QR saved to gallery", Toast.LENGTH_SHORT).show() },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 80.dp).height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(20.dp))
+                }
+            }
+
+            // Bank details (bank path)
+            if (isBankPath) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                        BankDetailsPanel(
+                            loading = walletLoading,
+                            error = walletError ?: if (!walletLoading && bankDetails == null && wallet != null) "No bank account details configured." else null,
+                            details = bankDetails,
+                            onRetry = { walletRetryNonce++ }
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+            }
+
+            // Payment methods (UPI path)
+            if (!isBankPath && (walletLoading || methodsToShow.isNotEmpty())) {
+                item {
+                    Text("Choose Payment Method", modifier = Modifier.padding(horizontal = 16.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black)
+                    Spacer(Modifier.height(10.dp))
+                    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), shape = RoundedCornerShape(14.dp), color = Color.White, shadowElevation = 1.dp, border = BorderStroke(1.dp, Color(0xFFEEEEEE))) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            if (walletLoading) {
+                                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = OrangePrimary, modifier = Modifier.size(32.dp))
+                                }
+                            } else {
+                                methodsToShow.forEachIndexed { index, m ->
+                                    val isSelected = selectedMethodType == m.type
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth().clickable {
+                                            selectedMethodType = m.type
+                                            selectedMethodId = m.id
+                                            context.launchWalletPaymentMethod(m, wallet?.upiId, depositAmount)
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color.White,
+                                        border = BorderStroke(if (isSelected) 1.5.dp else 0.dp, if (isSelected) OrangePrimary else Color.Transparent)
+                                    ) {
+                                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Surface(modifier = Modifier.size(40.dp), shape = RoundedCornerShape(8.dp), color = colorForWalletPaymentType(m.type).copy(alpha = 0.12f)) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(iconForWalletPaymentType(m.type), null, tint = colorForWalletPaymentType(m.type), modifier = Modifier.size(22.dp))
+                                                }
+                                            }
+                                            Spacer(Modifier.width(14.dp))
+                                            Text(m.name, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.Black, modifier = Modifier.weight(1f))
+                                            Icon(Icons.Default.TouchApp, null, tint = OrangePrimary, modifier = Modifier.size(24.dp))
+                                        }
+                                    }
+                                    if (index < methodsToShow.lastIndex) Divider(color = Color(0xFFF5F5F5))
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(20.dp))
+                }
+            }
+
+            // Screenshot upload section
+            item {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Upload Payment Screenshot", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black)
+                        Spacer(Modifier.width(6.dp))
+                        Icon(Icons.Default.Help, null, tint = Color.Gray, modifier = Modifier.size(18.dp))
+                    }
+                    Text("Max 10MB · JPG, PNG", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().height(150.dp).clickable { screenshotLauncher.launch("image/*") },
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFF7F7F7),
+                        border = BorderStroke(1.5.dp, Color(0xFFDDDDDD))
+                    ) {
+                        if (screenshotUri != null) {
+                            AsyncImage(model = screenshotUri, contentDescription = "Screenshot", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        } else {
+                            Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                Icon(Icons.Default.AddPhotoAlternate, null, tint = Color(0xFFBBBBBB), modifier = Modifier.size(48.dp))
+                                Spacer(Modifier.height(8.dp))
+                                Text("Tap to select screenshot", fontSize = 14.sp, color = Color.Gray, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                    }
+                    if (uploadError != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(uploadError!!, color = Color(0xFFD32F2F), fontSize = 14.sp, modifier = Modifier.fillMaxWidth())
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            val uri = screenshotUri
+                            if (uri == null) {
+                                uploadError = "Please select a payment screenshot first."
+                                return@Button
+                            }
+                            val finalMethodId = selectedMethodId
+                                ?: methodsToShow.firstOrNull()?.id
+                                ?: 7
+                            uploadScope.launch {
+                                uploadSubmitting = true
+                                uploadError = null
+                                val (result, err) = postDepositUploadProof(context, uri, depositAmount, finalMethodId)
+                                uploadSubmitting = false
+                                if (result != null) {
+                                    Toast.makeText(context, "Deposit #${result.id} submitted — ${result.status}. Amount: ₹${result.amount}", Toast.LENGTH_LONG).show()
+                                    onBack()
+                                } else {
+                                    uploadError = err ?: "Upload failed. Please try again."
+                                }
+                            }
+                        },
+                        enabled = !uploadSubmitting,
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (uploadSubmitting) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("Submit Payment Proof", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PaymentMethodItem(name: String, icon: ImageVector, color: Color, upiId: String? = null, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFF5F5F5),
+        border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f))
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Surface(modifier = Modifier.size(48.dp), shape = CircleShape, color = color.copy(alpha = 0.1f)) {
-                Box(contentAlignment = Alignment.Center) { Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(28.dp)) }
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(28.dp))
+                }
             }
             Spacer(modifier = Modifier.width(16.dp))
-            Text(name, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f), color = Color.Black)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(name, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletInkWarm)
+            }
             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray)
         }
     }
 }
 
+private const val PREFS_WITHDRAW_NAME = "kokoroko_withdraw"
+
+private fun mergedWithdrawBank(api: BankDetailsUi?, local: BankDetailsUi?): BankDetailsUi? {
+    val a = api
+    if (a != null && (a.accountNumber.isNotBlank() || a.bankName.isNotBlank() || a.accountHolder.isNotBlank())) {
+        return a
+    }
+    return local?.takeIf {
+        it.accountNumber.isNotBlank() || it.bankName.isNotBlank() || it.accountHolder.isNotBlank()
+    }
+}
+
+private fun mergedWithdrawUpi(api: String?, local: String?): String? {
+    val a = api?.trim()
+    if (!a.isNullOrBlank()) return a
+    return local?.trim()?.takeIf { it.isNotBlank() }
+}
+
+private fun Context.readLocalWithdrawBank(): BankDetailsUi? {
+    val p = getSharedPreferences(PREFS_WITHDRAW_NAME, Context.MODE_PRIVATE)
+    val holder = p.getString("bank_holder", "")?.trim().orEmpty()
+    val bankName = p.getString("bank_name", "")?.trim().orEmpty()
+    val acc = p.getString("bank_account", "")?.trim().orEmpty()
+    val ifsc = p.getString("bank_ifsc", "")?.trim().orEmpty()
+    val branch = p.getString("bank_branch", "")?.trim().orEmpty()
+    if (holder.isBlank() && bankName.isBlank() && acc.isBlank() && ifsc.isBlank()) return null
+    return BankDetailsUi(holder, bankName, acc, ifsc, branch)
+}
+
+private fun Context.readLocalWithdrawUpi(): String? =
+    getSharedPreferences(PREFS_WITHDRAW_NAME, Context.MODE_PRIVATE)
+        .getString("upi_vpa", null)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+
+private fun Context.saveLocalWithdrawBank(b: BankDetailsUi) {
+    getSharedPreferences(PREFS_WITHDRAW_NAME, Context.MODE_PRIVATE).edit().apply {
+        putString("bank_holder", b.accountHolder)
+        putString("bank_name", b.bankName)
+        putString("bank_account", b.accountNumber)
+        putString("bank_ifsc", b.ifsc)
+        putString("bank_branch", b.branch)
+        apply()
+    }
+}
+
+private fun Context.saveLocalWithdrawUpi(vpa: String) {
+    getSharedPreferences(PREFS_WITHDRAW_NAME, Context.MODE_PRIVATE).edit()
+        .putString("upi_vpa", vpa.trim())
+        .apply()
+}
+
+private fun mergedWithdrawUpiFromSaved(
+    saved: AuthBankDetailsApi?,
+    local: String?
+): String? {
+    val fromApi = saved?.upiId?.trim()?.takeIf { it.isNotBlank() }
+    return mergedWithdrawUpi(fromApi, local)
+}
+
+private fun mergedWithdrawBankFromSaved(
+    saved: AuthBankDetailsApi?,
+    local: BankDetailsUi?
+): BankDetailsUi? {
+    val fromApi = saved?.toBankDetailsUiOrNull()
+    return mergedWithdrawBank(fromApi, local)
+}
+
+private fun withdrawalDetailsForApi(
+    paymentMethod: String,
+    saved: AuthBankDetailsApi?,
+    localBank: BankDetailsUi?,
+    localUpi: String?
+): String? {
+    val bank = mergedWithdrawBankFromSaved(saved, localBank)
+    val upi = mergedWithdrawUpiFromSaved(saved, localUpi)
+    return when (paymentMethod) {
+        "upi" -> upi
+        "bank" ->
+            bank?.let { b ->
+                buildString {
+                    append(b.accountNumber)
+                    if (b.ifsc.isNotBlank()) {
+                        append(" | ")
+                        append(b.ifsc)
+                    }
+                }
+            }
+        else -> null
+    }
+}
+
 @Composable
-fun WalletScreen(onBack: () -> Unit, onDepositClick: () -> Unit) {
-    BackHandler { onBack() }
-    var selectedTab by remember { mutableStateOf("deposit") }
-    var amount by remember { mutableStateOf("1000") }
-    var paymentMethod by remember { mutableStateOf("upi") }
-    Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.Black) }
-            Text("Wallet", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-            Surface(color = OrangePrimary, shape = RoundedCornerShape(8.dp), modifier = Modifier.size(40.dp)) {
-                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.History, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp)) }
+private fun WithdrawalDestinationCard(
+    paymentMethod: String,
+    savedBankDetails: AuthBankDetailsApi?,
+    detailsLoading: Boolean,
+    detailsError: String?,
+    localBank: BankDetailsUi?,
+    localUpi: String?,
+    onRetryWallet: () -> Unit,
+    onAddBank: () -> Unit,
+    onAddUpi: () -> Unit
+) {
+    val bank = mergedWithdrawBankFromSaved(savedBankDetails, localBank)
+    val upi = mergedWithdrawUpiFromSaved(savedBankDetails, localUpi)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "Withdrawal destination",
+            fontWeight = FontWeight.Bold,
+            color = WalletInkWarm,
+            fontSize = 15.sp
+        )
+        Spacer(Modifier.height(8.dp))
+        if (paymentMethod == "bank") {
+            when {
+                detailsLoading && bank == null -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                            color = OrangePrimary
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text("Loading bank account…", fontSize = 13.sp, color = Color.Gray)
+                    }
+                }
+                bank != null -> {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFFFF8F0),
+                        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text("Bank account", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = WalletInkWarm)
+                            Spacer(Modifier.height(6.dp))
+                            BankDetailLine("Account holder", bank.accountHolder)
+                            BankDetailLine("Bank name", bank.bankName)
+                            BankDetailLine("Account number", bank.accountNumber)
+                            BankDetailLine("IFSC", bank.ifsc)
+                            if (bank.branch.isNotBlank()) BankDetailLine("Branch", bank.branch)
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = onAddBank) {
+                            Text("Change", color = OrangePrimary, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+                else -> {
+                    detailsError?.let {
+                        Text(it, color = Color(0xFFC62828), fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+                    }
+                    OutlinedButton(
+                        onClick = onAddBank,
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(1.dp, OrangePrimary),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = OrangePrimary)
+                    ) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Add bank account", fontWeight = FontWeight.SemiBold)
+                    }
+                    if (detailsError != null) {
+                        TextButton(onClick = onRetryWallet) { Text("Retry loading", color = OrangePrimary) }
+                    }
+                }
+            }
+        } else {
+            when {
+                detailsLoading && upi == null -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                            color = OrangePrimary
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text("Loading UPI…", fontSize = 13.sp, color = Color.Gray)
+                    }
+                }
+                upi != null -> {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFFFF8F0),
+                        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text("UPI ID", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = WalletInkWarm)
+                            Spacer(Modifier.height(4.dp))
+                            Text(upi, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = onAddUpi) {
+                            Text("Change", color = OrangePrimary, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+                else -> {
+                    detailsError?.let {
+                        Text(it, color = Color(0xFFC62828), fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+                    }
+                    OutlinedButton(
+                        onClick = onAddUpi,
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(1.dp, OrangePrimary),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = OrangePrimary)
+                    ) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Add UPI ID", fontWeight = FontWeight.SemiBold)
+                    }
+                    if (detailsError != null) {
+                        TextButton(onClick = onRetryWallet) { Text("Retry loading", color = OrangePrimary) }
+                    }
+                }
             }
         }
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            item {
-                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("₹0", fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
-                }
-            }
-            item {
-                Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(8.dp), color = Color(0xFFF5F5F5)) {
-                    Row(modifier = Modifier.fillMaxSize()) {
-                        Surface(modifier = Modifier.weight(1f).fillMaxHeight().clickable { selectedTab = "deposit" }, color = if (selectedTab == "deposit") Color.Black else Color.Transparent, shape = RoundedCornerShape(8.dp)) { Box(contentAlignment = Alignment.Center) { Text("Deposit", color = if (selectedTab == "deposit") Color.White else Color.Black, fontWeight = FontWeight.Bold) } }
-                        Surface(modifier = Modifier.weight(1f).fillMaxHeight().clickable { selectedTab = "withdrawal" }, color = if (selectedTab == "withdrawal") Color.Black else Color.Transparent, shape = RoundedCornerShape(8.dp)) { Box(contentAlignment = Alignment.Center) { Text("Withdrawal", color = if (selectedTab == "withdrawal") Color.White else Color.Black, fontWeight = FontWeight.Bold) } }
-                    }
-                }
-            }
-            item {
-                Surface(modifier = Modifier.fillMaxWidth().padding(16.dp), color = Color(0xFFFFEBEE), shape = RoundedCornerShape(8.dp)) {
-                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Info, contentDescription = null, tint = Color.Black, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            if (selectedTab == "deposit") "Minimum amount of 100 required to deposit." else "Withdrawal will be processed in 4 - 48 Hrs.",
-                            fontSize = 12.sp,
-                            color = Color.Black
-                        )
-                    }
-                }
-            }
-            if (selectedTab == "withdrawal") { item { Text("• Max amount available for withdrawal - ₹0.", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 14.sp, color = Color.Black) } }
-            item {
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    val upiSelected = paymentMethod == "upi"
-                    val bankSelected = paymentMethod == "bank"
-                    val upiTint = if (upiSelected) Color.White else Color.Black
-                    val bankTint = if (bankSelected) Color.White else Color.Black
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(120.dp)
-                            .clickable { paymentMethod = "upi" },
-                        color = if (upiSelected) OrangePrimary else Color(0xFFF5F5F5),
-                        shape = RoundedCornerShape(12.dp),
-                        border = if (upiSelected) null else BorderStroke(1.dp, Color.LightGray)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddWithdrawBankDialog(
+    initial: BankDetailsUi?,
+    onDismiss: () -> Unit,
+    onSave: (BankDetailsUi) -> Unit
+) {
+    var holder by remember { mutableStateOf(initial?.accountHolder.orEmpty()) }
+    var bankName by remember { mutableStateOf(initial?.bankName.orEmpty()) }
+    var account by remember { mutableStateOf(initial?.accountNumber.orEmpty()) }
+    var ifsc by remember { mutableStateOf(initial?.ifsc.orEmpty()) }
+    var branch by remember { mutableStateOf(initial?.branch.orEmpty()) }
+    Dialog(onDismissRequest = onDismiss) {
+        Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(
+                Modifier.padding(20.dp).verticalScroll(rememberScrollState())
+            ) {
+                Text("Add bank account", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = holder,
+                    onValueChange = { holder = it },
+                    label = { Text("Account holder") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = bankName,
+                    onValueChange = { bankName = it },
+                    label = { Text("Bank name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = account,
+                    onValueChange = { account = it.filter { c -> c.isDigit() }.take(18) },
+                    label = { Text("Account number") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = ifsc,
+                    onValueChange = { ifsc = it.uppercase(Locale.US).filter { c -> c.isLetterOrDigit() }.take(11) },
+                    label = { Text("IFSC") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = branch,
+                    onValueChange = { branch = it },
+                    label = { Text("Branch (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            onSave(
+                                BankDetailsUi(
+                                    accountHolder = holder.trim(),
+                                    bankName = bankName.trim(),
+                                    accountNumber = account.trim(),
+                                    ifsc = ifsc.trim(),
+                                    branch = branch.trim()
+                                )
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
                     ) {
-                        Box(modifier = Modifier.padding(12.dp)) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Row { Icon(Icons.Default.QrCode, null, tint = upiTint); Spacer(Modifier.width(4.dp)); Icon(Icons.Default.QrCodeScanner, null, tint = upiTint) }
-                                Icon(Icons.Default.Star, null, tint = upiTint)
-                            }
-                            Column(modifier = Modifier.align(Alignment.BottomStart)) {
-                                Text("UPI", color = upiTint, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                Text("Commission 0%", color = if (upiSelected) Color.White.copy(alpha = 0.8f) else Color.Gray, fontSize = 12.sp)
-                            }
+                        Text("Save")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddWithdrawUpiDialog(
+    initial: String?,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var vpa by remember { mutableStateOf(initial.orEmpty()) }
+    Dialog(onDismissRequest = onDismiss) {
+        Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp)) {
+                Text("Add UPI ID", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = vpa,
+                    onValueChange = { vpa = it.trim().take(50) },
+                    label = { Text("UPI / VPA") },
+                    singleLine = true,
+                    placeholder = { Text("name@bank") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { onSave(vpa.trim()) },
+                        enabled = vpa.trim().isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                    ) {
+                        Text("Save")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun WalletScreen(onBack: () -> Unit, onDepositClick: (walletPaymentMethod: String, amount: String) -> Unit) {
+    BackHandler { onBack() }
+    val context = LocalContext.current
+    val withdrawScope = rememberCoroutineScope()
+    var selectedTab by remember { mutableStateOf("deposit") }
+    var depositAmount by remember { mutableStateOf("1000") }
+    var withdrawAmount by remember { mutableStateOf("") }
+    var paymentMethod by remember { mutableStateOf("upi") }
+    var withdrawSavedDetails by remember { mutableStateOf<AuthBankDetailsApi?>(null) }
+    var withdrawDetailsLoading by remember { mutableStateOf(false) }
+    var withdrawDetailsError by remember { mutableStateOf<String?>(null) }
+    var withdrawDetailsNonce by remember { mutableStateOf(0) }
+    var withdrawSubmitting by remember { mutableStateOf(false) }
+    var localPrefsEpoch by remember { mutableStateOf(0) }
+    var showAddBankDialog by remember { mutableStateOf(false) }
+    var showAddUpiDialog by remember { mutableStateOf(false) }
+    var walletSnapshot by remember { mutableStateOf<WalletApiResult?>(null) }
+
+    val localBank = remember(localPrefsEpoch) { context.readLocalWithdrawBank() }
+    val localUpi = remember(localPrefsEpoch) { context.readLocalWithdrawUpi() }
+
+    LaunchedEffect(selectedTab, withdrawDetailsNonce) {
+        if (selectedTab != "withdrawal") return@LaunchedEffect
+        withdrawDetailsLoading = true
+        withdrawDetailsError = null
+        val (saved, err) = fetchAuthBankDetails()
+        withdrawDetailsLoading = false
+        withdrawSavedDetails = saved
+        withdrawDetailsError = err
+    }
+
+    LaunchedEffect(Unit) {
+        val (w, _) = fetchWalletFromApi()
+        walletSnapshot = w
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
+        // Header
+        Box(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 4.dp, vertical = 8.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
+                Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.Black)
+            }
+            Text("Wallet", modifier = Modifier.align(Alignment.Center), fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+        }
+        Divider(color = Color(0xFFEEEEEE))
+
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            item { Spacer(Modifier.height(8.dp)) }
+
+            // Tab switcher
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    listOf("deposit" to "Deposit", "withdrawal" to "Withdrawal").forEach { (tab, label) ->
+                        val selected = selectedTab == tab
+                        Column(
+                            modifier = Modifier.weight(1f).clickable { selectedTab = tab },
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                label,
+                                modifier = Modifier.padding(vertical = 12.dp),
+                                color = if (selected) OrangePrimary else Color.Gray,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 17.sp
+                            )
+                            Box(modifier = Modifier.fillMaxWidth().height(3.dp).background(if (selected) OrangePrimary else Color.Transparent, RoundedCornerShape(2.dp)))
                         }
                     }
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(120.dp)
-                            .clickable { paymentMethod = "bank" },
-                        color = if (bankSelected) OrangePrimary else Color(0xFFF5F5F5),
-                        shape = RoundedCornerShape(12.dp),
-                        border = if (bankSelected) null else BorderStroke(1.dp, Color.LightGray)
-                    ) {
-                        Box(modifier = Modifier.padding(12.dp)) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Icon(Icons.Default.CreditCard, null, tint = bankTint)
-                                if (selectedTab == "withdrawal") Icon(Icons.Default.Star, null, tint = if (bankSelected) Color.White.copy(alpha = 0.7f) else Color.LightGray)
-                            }
-                            Column(modifier = Modifier.align(Alignment.BottomStart)) {
-                                Text("Bank Account", color = bankTint, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text("Commission 0%", color = if (bankSelected) Color.White.copy(alpha = 0.8f) else Color.Gray, fontSize = 12.sp)
-                            }
-                        }
-                    }
                 }
+                Divider(color = Color(0xFFEEEEEE))
+                Spacer(Modifier.height(12.dp))
             }
+
+            // Info banner
             item {
                 Surface(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color.White,
-                    border = BorderStroke(1.dp, Color.LightGray)
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFFF5F5F5)
                 ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Info, null, tint = Color.Gray, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
                         Text(
-                            if (selectedTab == "deposit") amount else "0",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black
+                            if (selectedTab == "deposit") "Minimum deposit amount is ₹100." else "Withdrawal processed in 4–48 hours.",
+                            fontSize = 14.sp, color = Color.DarkGray
                         )
                     }
                 }
+                Spacer(Modifier.height(16.dp))
             }
-            if (selectedTab == "deposit") { item { Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("500", "1000", "2000", "5000", "10000").forEach { valStr -> Surface(modifier = Modifier.weight(1f).height(40.dp).clickable { amount = valStr }, color = if (amount == valStr) Color.Black else Color(0xFFF5F5F5), shape = RoundedCornerShape(4.dp)) { Box(contentAlignment = Alignment.Center) { Text("+₹$valStr", color = if (amount == valStr) Color.White else Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold) } } } } } }
-            item { Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text(if (selectedTab == "deposit") "How to Deposit:" else "How to withdrawal :", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black); Surface(border = BorderStroke(1.dp, Color.LightGray), shape = RoundedCornerShape(4.dp), color = Color.White) { Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.PlayCircle, null, tint = Color.Red, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Watch Tutorial", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black) } } } }
-            if (selectedTab == "deposit") { item { Spacer(modifier = Modifier.height(32.dp)); Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(56.dp).clickable { onDepositClick() }, shape = RoundedCornerShape(28.dp), color = Color.Black) { Row(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) { Text("Deposit amount", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp); Icon(Icons.Default.ArrowForward, null, tint = Color.White) } }; Spacer(modifier = Modifier.height(32.dp)) } }
+
+            if (selectedTab == "withdrawal") {
+                item {
+                    Text(
+                        "Available for withdrawal: ${formatRupeeBalanceForDisplay(walletSnapshot?.withdrawableBalance)}",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        fontSize = 15.sp, color = Color.Gray
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
+            // Payment method cards
+            item {
+                Text("Select Payment Method", modifier = Modifier.padding(horizontal = 16.dp), fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.Black)
+                Spacer(Modifier.height(10.dp))
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    listOf(
+                        Triple("upi", "UPI", Icons.Default.QrCodeScanner),
+                        Triple("bank", "Bank Account", Icons.Default.AccountBalance)
+                    ).forEach { (method, label, icon) ->
+                        val selected = paymentMethod == method
+                        Surface(
+                            modifier = Modifier.weight(1f).height(100.dp).clickable { paymentMethod = method },
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (selected) Color(0xFFFFF8F2) else Color.White,
+                            border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) OrangePrimary else Color(0xFFEEEEEE)),
+                            shadowElevation = 1.dp
+                        ) {
+                            Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                                Icon(icon, null, tint = OrangePrimary, modifier = Modifier.size(28.dp))
+                                Column {
+                                    Text(label, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    Text("0% commission", color = Color.Gray, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+            if (selectedTab == "withdrawal") {
+                item {
+                    WithdrawalDestinationCard(
+                        paymentMethod = paymentMethod,
+                        savedBankDetails = withdrawSavedDetails,
+                        detailsLoading = withdrawDetailsLoading,
+                        detailsError = withdrawDetailsError,
+                        localBank = localBank,
+                        localUpi = localUpi,
+                        onRetryWallet = { withdrawDetailsNonce++ },
+                        onAddBank = { showAddBankDialog = true },
+                        onAddUpi = { showAddUpiDialog = true }
+                    )
+                }
+            }
+            item {
+                val amountValue = if (selectedTab == "deposit") depositAmount else withdrawAmount
+                Text("Enter Amount", modifier = Modifier.padding(horizontal = 16.dp), fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.Black)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = amountValue,
+                    onValueChange = { new ->
+                        val filtered = new.filter { it.isDigit() }.take(9)
+                        if (selectedTab == "deposit") depositAmount = filtered else withdrawAmount = filtered
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    singleLine = true,
+                    label = { Text("Amount (₹)", color = Color.Gray, fontSize = 15.sp) },
+                    placeholder = { Text(if (selectedTab == "deposit") "e.g. 500" else "e.g. 200", color = Color.LightGray, fontSize = 16.sp) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.Black),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = OrangePrimary,
+                        unfocusedBorderColor = Color(0xFFDDDDDD),
+                        focusedLabelColor = OrangePrimary,
+                        unfocusedLabelColor = Color.Gray,
+                        cursorColor = OrangePrimary,
+                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+            if (selectedTab == "deposit") {
+                item {
+                    Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("500", "1000", "2000", "5000", "10000").forEach { valStr ->
+                            Surface(
+                                modifier = Modifier.weight(1f).height(40.dp).clickable { depositAmount = valStr },
+                                color = if (depositAmount == valStr) Color(0xFFFFF8F2) else Color.White,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, if (depositAmount == valStr) OrangePrimary else Color(0xFFDDDDDD))
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("₹$valStr", color = if (depositAmount == valStr) OrangePrimary else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (selectedTab == "deposit") "How to Deposit" else "How to Withdraw", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.Black)
+                    Surface(border = BorderStroke(1.dp, Color(0xFFDDDDDD)), shape = RoundedCornerShape(8.dp), color = Color.White) {
+                        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.PlayCircle, null, tint = Color.Red, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Watch Tutorial", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.DarkGray)
+                        }
+                    }
+                }
+            }
+            if (selectedTab == "withdrawal") {
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .height(56.dp)
+                            .clickable(enabled = !withdrawSubmitting) {
+                                withdrawScope.launch {
+                                    val amt = withdrawAmount.toIntOrNull() ?: 0
+                                    val details =
+                                        withdrawalDetailsForApi(
+                                            paymentMethod,
+                                            withdrawSavedDetails,
+                                            localBank,
+                                            localUpi
+                                        ).orEmpty()
+                                    if (details.isBlank()) {
+                                        Toast.makeText(
+                                            context,
+                                            "Add or load a bank account / UPI for this method first.",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        return@launch
+                                    }
+                                    withdrawSubmitting = true
+                                    val method = if (paymentMethod == "upi") "UPI" else "BANK"
+                                    val (res, err) = postWithdrawInitiate(amt, method, details)
+                                    withdrawSubmitting = false
+                                    Toast.makeText(
+                                        context,
+                                        when {
+                                            res != null ->
+                                                "Withdrawal #${res.id} — ${res.status} (₹${res.amount})"
+                                            else -> err ?: "Could not submit withdrawal"
+                                        },
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (withdrawSubmitting) OrangePrimary.copy(alpha = 0.65f) else OrangePrimary
+                    ) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            if (withdrawSubmitting) {
+                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text("Request Withdrawal", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(24.dp))
+                }
+            }
+            if (selectedTab == "deposit") {
+                item {
+                    Spacer(modifier = Modifier.height(32.dp))
+                    Button(
+                        onClick = { onDepositClick(paymentMethod, depositAmount) },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(56.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Proceed to Deposit", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.ArrowForward, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+        if (showAddBankDialog) {
+            AddWithdrawBankDialog(
+                initial = mergedWithdrawBank(withdrawSavedDetails?.toBankDetailsUiOrNull(), localBank),
+                onDismiss = { showAddBankDialog = false },
+                onSave = { b ->
+                    context.saveLocalWithdrawBank(b)
+                    localPrefsEpoch++
+                    showAddBankDialog = false
+                    Toast.makeText(context, "Bank account saved for withdrawal", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+        if (showAddUpiDialog) {
+            AddWithdrawUpiDialog(
+                initial = mergedWithdrawUpi(withdrawSavedDetails?.upiId?.takeIf { it.isNotBlank() }, localUpi),
+                onDismiss = { showAddUpiDialog = false },
+                onSave = { v ->
+                    context.saveLocalWithdrawUpi(v)
+                    localPrefsEpoch++
+                    showAddUpiDialog = false
+                    Toast.makeText(context, "UPI ID saved for withdrawal", Toast.LENGTH_SHORT).show()
+                }
+            )
         }
     }
 }
@@ -2818,6 +5877,11 @@ fun HomeScreen(
 ) {
     var liveEnabled by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
+    var walletBalanceText by remember { mutableStateOf("₹0") }
+    LaunchedEffect(Unit) {
+        val (w, _) = fetchWalletFromApi()
+        walletBalanceText = formatRupeeBalanceForDisplay(w?.balance)
+    }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -2829,7 +5893,8 @@ fun HomeScreen(
                 onDicePlayClick = onOpenGundata,
                 onCricketClick = onOpenCricket,
                 onCockfightClick = onOpenCockfight,
-                onWalletClick = onWalletClick
+                onWalletClick = onWalletClick,
+                walletBalanceText = walletBalanceText
             )
         }
         item(key = "banner", contentType = "banner") { BannerCarousel(homeListState = listState) }
@@ -2906,37 +5971,60 @@ fun HomeScreen(
 }
 
 @Composable
+private fun WalletBalanceChip(
+    onClick: () -> Unit,
+    balanceText: String = "₹0",
+    modifier: Modifier = Modifier,
+    spacerBetweenIconAndText: Dp = 6.dp
+) {
+    Surface(
+        onClick = onClick,
+        color = Color(0xFF1A1A2E),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier,
+        shadowElevation = 4.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(22.dp).background(OrangePrimary, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Wallet, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                }
+                Spacer(Modifier.width(6.dp))
+                Text("My Wallet", fontSize = 10.sp, color = Color.White.copy(alpha = 0.6f), letterSpacing = 0.3.sp)
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(balanceText, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, letterSpacing = 0.sp)
+        }
+    }
+}
+
+@Composable
 fun TopHeader(
     onDicePlayClick: () -> Unit = {},
     onCricketClick: () -> Unit = {},
     onCockfightClick: () -> Unit = {},
-    onWalletClick: () -> Unit = {}
+    onWalletClick: () -> Unit = {},
+    walletBalanceText: String = "₹0"
 ) {
-    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            DrawableImage(R.drawable.gamelogo, "Logo", modifier = Modifier.size(50.dp).clip(CircleShape).border(1.dp, Color.LightGray, CircleShape), contentScale = ContentScale.Crop)
-            Spacer(Modifier.width(8.dp))
+            DrawableImage(R.drawable.gamelogo, "Logo", modifier = Modifier.size(44.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+            Spacer(Modifier.width(6.dp))
             HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight, onClick = onCockfightClick)
             HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata, onClick = onDicePlayClick)
             HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket, onClick = onCricketClick)
         }
-        Surface(
-            color = OrangePrimary,
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier
-                .height(40.dp)
-                .clickable { onWalletClick() },
-            shadowElevation = 0.dp
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Wallet, contentDescription = "Wallet", tint = Color.Black)
-                Spacer(Modifier.width(8.dp))
-                Text("₹0", color = Color.Black, fontWeight = FontWeight.Bold)
-            }
-        }
+        WalletBalanceChip(onClick = onWalletClick, balanceText = walletBalanceText)
     }
 }
 
@@ -2981,9 +6069,8 @@ fun BannerCarousel(homeListState: LazyListState) {
         if (banners.size <= 1) return@LaunchedEffect
         while (true) {
             delay(3000)
-            while (homeListState.isScrollInProgress) {
-                delay(48)
-            }
+            snapshotFlow { homeListState.isScrollInProgress }
+                .first { !it }
             val current = rowState.firstVisibleItemIndex.coerceIn(0, banners.lastIndex)
             val next = (current + 1) % banners.size
             rowState.scrollToItem(next)
@@ -3040,12 +6127,7 @@ fun PopularGamesSection(
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             GameIconItem("Cockfight", R.drawable.category_cockfight, onClick = onCockfightClick)
             GameIconItem("Gundata", R.drawable.category_gunduata, onClick = onGundataClick)
-            GameIconItem(
-                "Cricket",
-                R.drawable.category_cricket,
-                onClick = onCricketClick,
-                hideSoonBadge = true
-            )
+            GameIconItem("Cricket", R.drawable.category_cricket, onClick = onCricketClick)
             GameIconItem("Promotions", R.drawable.category_promotions, onClick = onPromotionsClick)
         }
     }
@@ -3055,43 +6137,26 @@ fun PopularGamesSection(
 fun GameIconItem(
     label: String,
     imageRes: Int,
-    onClick: (() -> Unit)? = null,
-    hideSoonBadge: Boolean = false
+    onClick: (() -> Unit)? = null
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
     ) {
-        Box(
-            modifier = Modifier
-                .size(70.dp)
-                .clip(RoundedCornerShape(12.dp))
+        Surface(
+            modifier = Modifier.size(70.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = Color.White,
+            shadowElevation = 0.dp
         ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                shape = RoundedCornerShape(12.dp),
-                color = Color.White,
-                shadowElevation = 0.dp
-            ) {
-                DrawableImage(
-                    imageRes,
-                    contentDescription = label,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(12.dp)),
-                    contentScale = ContentScale.Crop
-                )
-            }
-            if (hideSoonBadge) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 3.dp, end = 3.dp)
-                        .width(44.dp)
-                        .height(20.dp)
-                        .background(Color(0xFFECECEC), RoundedCornerShape(6.dp))
-                )
-            }
+            DrawableImage(
+                imageRes,
+                contentDescription = label,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Crop
+            )
         }
     }
 }
