@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -5929,42 +5930,6 @@ fun HomeScreen(
                 }
             }
         }
-        item(key = "highlights_cf_1", contentType = "highlights") {
-            HighlightsSection(
-                title = "Popular Cock Fight Highlights -",
-                leftLabel = "KOKOROKO TRAILER",
-                rightLabel = "BAAHUBALI",
-                leftImage = R.drawable.category_cockfight,
-                rightImage = R.drawable.match_meron
-            )
-        }
-        item(key = "highlights_dice_1", contentType = "highlights") {
-            HighlightsSection(
-                title = "Popular Diceplay Highlights -",
-                leftLabel = "GUNDATA",
-                rightLabel = "SANKRANTI",
-                leftImage = R.drawable.category_gunduata,
-                rightImage = R.drawable.banner_home_2
-            )
-        }
-        item(key = "highlights_cf_2", contentType = "highlights") {
-            HighlightsSection(
-                title = "Popular Cock Fight Highlights -",
-                leftLabel = "Arena highlight",
-                rightLabel = "Best moments",
-                leftImage = R.drawable.match_wala,
-                rightImage = R.drawable.banner_home_1
-            )
-        }
-        item(key = "highlights_dice_2", contentType = "highlights") {
-            HighlightsSection(
-                title = "Popular Diceplay Highlights -",
-                leftLabel = "GUNDATA",
-                rightLabel = "SANKRANTI",
-                leftImage = R.drawable.category_gunduata,
-                rightImage = R.drawable.banner_home_3
-            )
-        }
         item(key = "bottom_spacer", contentType = "spacer") { Spacer(modifier = Modifier.height(16.dp)) }
     }
     } // end Column
@@ -6027,12 +5992,37 @@ fun TopHeader(
             )
             Spacer(Modifier.width(10.dp))
             Column {
+                val infiniteTransition = rememberInfiniteTransition(label = "glow")
+                val glowAlpha by infiniteTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 800, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "glowAlpha"
+                )
+                // Alternate glow: orange → white → orange
+                val glowColor = if (glowAlpha < 0.5f)
+                    androidx.compose.ui.graphics.lerp(Color(0xFFFF6F00), Color.White, glowAlpha * 2f)
+                else
+                    androidx.compose.ui.graphics.lerp(Color.White, Color(0xFFFF6F00), (glowAlpha - 0.5f) * 2f)
                 Text(
                     "KOKOROKO",
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 18.sp,
                     color = Color.Black,
-                    letterSpacing = 0.5.sp
+                    letterSpacing = 0.5.sp,
+                    style = androidx.compose.ui.text.TextStyle(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 18.sp,
+                        letterSpacing = 0.5.sp,
+                        shadow = androidx.compose.ui.graphics.Shadow(
+                            color = glowColor.copy(alpha = 0.85f),
+                            offset = androidx.compose.ui.geometry.Offset(0f, 0f),
+                            blurRadius = 22f
+                        )
+                    )
                 )
                 Text(
                     "Live Games",
@@ -6056,6 +6046,15 @@ fun TopHeader(
                 Icon(Icons.Default.Wallet, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(walletBalanceText, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .background(OrangePrimary, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White, modifier = Modifier.size(14.dp))
+                }
             }
         }
     }
@@ -6221,43 +6220,49 @@ fun LiveCockFightHeader(liveEnabled: Boolean, onLiveChange: (Boolean) -> Unit) {
 
 @Composable
 fun LiveMatchCard(onClick: () -> Unit = {}) {
-    Card(
+    val context = LocalContext.current
+    val exoPlayer = remember {
+        androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
+            val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.live_video}")
+            setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
+            repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
+            volume = 0f
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp)
-            .clickable { onClick() },
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black)
+            .aspectRatio(16f / 9f)
+            .clickable { onClick() }
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    DrawableImage(
-                        R.drawable.match_meron,
-                        contentDescription = "Meron",
-                        modifier = Modifier.size(80.dp).clip(CircleShape),
-                        contentScale = ContentScale.Crop
+        AndroidView(
+            factory = {
+                androidx.media3.ui.PlayerView(it).apply {
+                    player = exoPlayer
+                    useController = false
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
                     )
-                    Text("Meron", fontWeight = FontWeight.Bold, color = Color.Black)
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("31-03-2026", fontSize = 12.sp, color = Color.Gray); Text("Vs", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black); Row(verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(OrangePrimary)); Spacer(Modifier.width(4.dp)); Text("1 : 4.5", fontSize = 12.sp, color = Color.Black) } }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    DrawableImage(
-                        R.drawable.match_wala,
-                        contentDescription = "Wala",
-                        modifier = Modifier.size(80.dp).clip(CircleShape),
-                        contentScale = ContentScale.Crop
-                    )
-                    Text("Wala", fontWeight = FontWeight.Bold, color = Color.Black)
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Surface(modifier = Modifier.weight(1f).height(50.dp), color = Color(0xFFFFF0F0), shape = RoundedCornerShape(4.dp), border = BorderStroke(1.dp, Color(0xFFFFCCCC))) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text("1 : 1.9300000", color = Color.Red, fontSize = 12.sp); Text("000000002", color = Color.Red, fontSize = 10.sp) } }
-                Spacer(Modifier.width(8.dp)); Surface(modifier = Modifier.weight(1f).height(50.dp), color = OrangePrimary, shape = RoundedCornerShape(4.dp)) { Box(contentAlignment = Alignment.Center) { Text("24/7 Live", color = Color.Black, fontWeight = FontWeight.Bold) } }
-                Spacer(Modifier.width(8.dp)); Surface(modifier = Modifier.weight(1f).height(50.dp), color = Color(0xFFF0F8FF), shape = RoundedCornerShape(4.dp), border = BorderStroke(1.dp, Color(0xFFCCE5FF))) { Box(contentAlignment = Alignment.Center) { Text("1 : 1.94", color = Color(0xFF007BFF)) } }
-            }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+        // LIVE badge
+        Row(
+            modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            LiveStreamBlinkingDot()
+            Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
         }
     }
 }
