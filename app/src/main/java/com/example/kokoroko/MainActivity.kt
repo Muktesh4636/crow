@@ -5882,21 +5882,20 @@ fun HomeScreen(
         val (w, _) = fetchWalletFromApi()
         walletBalanceText = formatRupeeBalanceForDisplay(w?.balance)
     }
-    LazyColumn(
+    Column(modifier = Modifier.fillMaxSize()) {
+        TopHeader(
+            onDicePlayClick = onOpenGundata,
+            onCricketClick = onOpenCricket,
+            onCockfightClick = onOpenCockfight,
+            onWalletClick = onWalletClick,
+            walletBalanceText = walletBalanceText
+        )
+        LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFFF5F5F5)),
         state = listState
     ) {
-        item(key = "top_header", contentType = "header") {
-            TopHeader(
-                onDicePlayClick = onOpenGundata,
-                onCricketClick = onOpenCricket,
-                onCockfightClick = onOpenCockfight,
-                onWalletClick = onWalletClick,
-                walletBalanceText = walletBalanceText
-            )
-        }
         item(key = "banner", contentType = "banner") { BannerCarousel(homeListState = listState) }
         item(key = "popular_games", contentType = "games") {
             PopularGamesSection(
@@ -5968,6 +5967,7 @@ fun HomeScreen(
         }
         item(key = "bottom_spacer", contentType = "spacer") { Spacer(modifier = Modifier.height(16.dp)) }
     }
+    } // end Column
 }
 
 @Composable
@@ -5979,27 +5979,24 @@ private fun WalletBalanceChip(
 ) {
     Surface(
         onClick = onClick,
-        color = Color(0xFF1A1A2E),
+        color = Color.White,
         shape = RoundedCornerShape(14.dp),
         modifier = modifier,
-        shadowElevation = 4.dp
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, Color(0xFFEEEEEE))
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier.size(22.dp).background(OrangePrimary, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Wallet, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
-                }
-                Spacer(Modifier.width(6.dp))
-                Text("My Wallet", fontSize = 10.sp, color = Color.White.copy(alpha = 0.6f), letterSpacing = 0.3.sp)
+            Box(
+                modifier = Modifier.size(34.dp).background(Color(0xFFF5F5F5), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Wallet, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(18.dp))
             }
-            Spacer(Modifier.height(2.dp))
-            Text(balanceText, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, letterSpacing = 0.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(balanceText, color = Color.Black, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, letterSpacing = 0.sp)
         }
     }
 }
@@ -6013,18 +6010,54 @@ fun TopHeader(
     walletBalanceText: String = "₹0"
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Logo + name on left
         Row(verticalAlignment = Alignment.CenterVertically) {
-            DrawableImage(R.drawable.gamelogo, "Logo", modifier = Modifier.size(44.dp).clip(CircleShape), contentScale = ContentScale.Crop)
-            Spacer(Modifier.width(6.dp))
-            HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight, onClick = onCockfightClick)
-            HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata, onClick = onDicePlayClick)
-            HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket, onClick = onCricketClick)
+            DrawableImage(
+                R.drawable.gamelogo,
+                "Logo",
+                modifier = Modifier.size(40.dp).clip(CircleShape),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    "KOKOROKO",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 18.sp,
+                    color = Color.Black,
+                    letterSpacing = 0.5.sp
+                )
+                Text(
+                    "Live Games",
+                    fontSize = 11.sp,
+                    color = Color.Gray,
+                    letterSpacing = 0.2.sp
+                )
+            }
         }
-        WalletBalanceChip(onClick = onWalletClick, balanceText = walletBalanceText)
+        // Wallet on right
+        Surface(
+            onClick = onWalletClick,
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFFF5F5F5),
+            border = BorderStroke(1.dp, Color(0xFFEEEEEE))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Wallet, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(walletBalanceText, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        }
     }
 }
 
@@ -6056,9 +6089,7 @@ fun HeaderIconItem(label: String, icon: ImageVector? = null, imageRes: Int? = nu
 fun BannerCarousel(homeListState: LazyListState) {
     val banners = remember {
         listOf(
-            R.drawable.banner_home_1,
-            R.drawable.banner_home_2,
-            R.drawable.banner_home_3
+            R.drawable.banner_gundu
         )
     }
     val rowState = rememberLazyListState()
