@@ -1,7 +1,10 @@
 package com.example.kokoroko
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.ContextWrapper
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -9,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -55,6 +59,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -66,8 +72,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.kokoroko.BuildConfig
 import com.example.kokoroko.R
 import com.example.kokoroko.ui.theme.KokorokoTheme
@@ -110,6 +114,15 @@ private fun apiUrl(path: String): String {
     val p = path.trim().let { if (it.startsWith("/")) it else "/$it" }
     return base + p
 }
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/** Cock fight live stream (HLS). Same host as [API_BASE_URL]. */
+private val COCKFIGHT_LIVE_HLS_URL = apiUrl("/hls/live/stream/index.m3u8")
 
 /** Live cricket feed */
 private val CRICKET_ODDS_API_URL = apiUrl("/api/cricket/live/")
@@ -1434,13 +1447,15 @@ private fun DrawableImage(
     resId: Int,
     contentDescription: String?,
     modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    alignment: Alignment = Alignment.Center
 ) {
     Image(
         painter = painterResource(id = resId),
         contentDescription = contentDescription,
         modifier = modifier,
-        contentScale = contentScale
+        contentScale = contentScale,
+        alignment = alignment
     )
 }
 
@@ -2599,38 +2614,16 @@ fun CockFightLiveScreen(
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             item {
-                Box(
-                    Modifier
+                CockFightHlsStream(
+                    modifier = Modifier
                         .fillMaxWidth()
                         .height(248.dp)
                         .padding(horizontal = 16.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color.Black)
-                ) {
-                    Text(
-                        text = "Live coming soon",
-                        modifier = Modifier.align(Alignment.Center),
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        LiveStreamBlinkingDot()
-                        Text(
-                            text = "LIVE",
-                            color = Color(0xFFE53935),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp
-                        )
-                    }
-                }
+                        .clip(RoundedCornerShape(10.dp)),
+                    onSurfaceClick = null,
+                    usePlaybackControls = true,
+                    useHomeLocalVideo = false
+                )
             }
             item {
                 Box(
@@ -5897,6 +5890,47 @@ fun HomeScreen(
             .background(Color(0xFFF5F5F5)),
         state = listState
     ) {
+        item(key = "search_bar", contentType = "search_bar") {
+            var searchQuery by remember { mutableStateOf("") }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = Color.White,
+                border = BorderStroke(1.dp, Color(0xFFEEEEEE)),
+                shadowElevation = 1.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = Color.Black),
+                        decorationBox = { inner ->
+                            if (searchQuery.isEmpty()) {
+                                Text("Search games...", fontSize = 15.sp, color = Color(0xFFAAAAAA))
+                            }
+                            inner()
+                        }
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            tint = Color.Gray,
+                            modifier = Modifier.size(18.dp).clickable { searchQuery = "" }
+                        )
+                    }
+                }
+            }
+        }
         item(key = "banner", contentType = "banner") { BannerCarousel(homeListState = listState) }
         item(key = "popular_games", contentType = "games") {
             PopularGamesSection(
@@ -5977,80 +6011,44 @@ fun TopHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .background(Color.Black)
+            .padding(start = 0.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // Logo + name on left
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // Full wordmark visible (fit inside bar; black fills any letterboxing)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(58.dp)
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+        ) {
             DrawableImage(
-                R.drawable.gamelogo,
-                "Logo",
-                modifier = Modifier.size(40.dp).clip(CircleShape),
-                contentScale = ContentScale.Crop
+                R.drawable.kokoroko_logo_header,
+                "Kokoroko",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.Center
             )
-            Spacer(Modifier.width(10.dp))
-            Column {
-                val infiniteTransition = rememberInfiniteTransition(label = "glow")
-                val glowAlpha by infiniteTransition.animateFloat(
-                    initialValue = 0f,
-                    targetValue = 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 800, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "glowAlpha"
-                )
-                // Alternate glow: orange → white → orange
-                val glowColor = if (glowAlpha < 0.5f)
-                    androidx.compose.ui.graphics.lerp(Color(0xFFFF6F00), Color.White, glowAlpha * 2f)
-                else
-                    androidx.compose.ui.graphics.lerp(Color.White, Color(0xFFFF6F00), (glowAlpha - 0.5f) * 2f)
-                Text(
-                    "KOKOROKO",
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 18.sp,
-                    color = Color.Black,
-                    letterSpacing = 0.5.sp,
-                    style = androidx.compose.ui.text.TextStyle(
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 18.sp,
-                        letterSpacing = 0.5.sp,
-                        shadow = androidx.compose.ui.graphics.Shadow(
-                            color = glowColor.copy(alpha = 0.85f),
-                            offset = androidx.compose.ui.geometry.Offset(0f, 0f),
-                            blurRadius = 22f
-                        )
-                    )
-                )
-                Text(
-                    "Live Games",
-                    fontSize = 11.sp,
-                    color = Color.Gray,
-                    letterSpacing = 0.2.sp
-                )
-            }
         }
-        // Wallet on right
+        // Wallet on right — same style as WalletBalanceChip
         Surface(
             onClick = onWalletClick,
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFFF5F5F5),
+            color = Color.White,
+            shape = RoundedCornerShape(14.dp),
+            shadowElevation = 2.dp,
             border = BorderStroke(1.dp, Color(0xFFEEEEEE))
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Wallet, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(walletBalanceText, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                val amountDigits = walletBalanceText.trim().removePrefix("₹").trim()
+                Text("₹", color = OrangePrimary, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, letterSpacing = 0.sp)
+                Text(amountDigits, color = Color.Black, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, letterSpacing = 0.sp)
                 Spacer(Modifier.width(8.dp))
                 Box(
-                    modifier = Modifier
-                        .size(22.dp)
-                        .background(OrangePrimary, CircleShape),
+                    modifier = Modifier.size(22.dp).background(OrangePrimary, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White, modifier = Modifier.size(14.dp))
@@ -6086,23 +6084,16 @@ fun HeaderIconItem(label: String, icon: ImageVector? = null, imageRes: Int? = nu
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BannerCarousel(homeListState: LazyListState) {
-    val banners = remember {
-        listOf(
-            R.drawable.banner_gundu
-        )
-    }
+    val totalBanners = 2 // 0 = gundu image, 1 = IPL composable
     val rowState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = rowState)
-    // LazyRow (horizontal) inside LazyColumn (vertical) avoids HorizontalPager nested-scroll fighting
-    // the feed. Do not advance while the home list is scrolling.
-    LaunchedEffect(banners.size) {
-        if (banners.size <= 1) return@LaunchedEffect
+    LaunchedEffect(totalBanners) {
         while (true) {
-            delay(3000)
+            delay(3500)
             snapshotFlow { homeListState.isScrollInProgress }
                 .first { !it }
-            val current = rowState.firstVisibleItemIndex.coerceIn(0, banners.lastIndex)
-            val next = (current + 1) % banners.size
+            val current = rowState.firstVisibleItemIndex.coerceIn(0, totalBanners - 1)
+            val next = (current + 1) % totalBanners
             rowState.scrollToItem(next)
         }
     }
@@ -6110,7 +6101,7 @@ fun BannerCarousel(homeListState: LazyListState) {
         modifier = Modifier
             .fillMaxWidth()
             .height(200.dp)
-            .padding(16.dp)
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.LightGray)
     ) {
@@ -6120,22 +6111,56 @@ fun BannerCarousel(homeListState: LazyListState) {
             flingBehavior = snapFling,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            items(
-                count = banners.size,
-                key = { index -> banners[index] }
-            ) { page ->
+            // Slide 0: Gundu banner image
+            item(key = "gundu") {
+                Box(modifier = Modifier.fillParentMaxWidth().fillMaxHeight()) {
+                    DrawableImage(R.drawable.banner_gundu, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                }
+            }
+            // Slide 1: IPL banner
+            item(key = "ipl") {
                 Box(
                     modifier = Modifier
                         .fillParentMaxWidth()
                         .fillMaxHeight()
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(Color(0xFF0D1B4B), Color(0xFF1A3A8F), Color(0xFF0D1B4B))
+                            )
+                        )
                 ) {
-                    DrawableImage(
-                        banners[page],
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
+                    // Subtle decorative circle
+                    Box(modifier = Modifier.size(220.dp).offset(x = (-40).dp, y = (-60).dp).background(Color.White.copy(alpha = 0.04f), CircleShape))
+                    Box(modifier = Modifier.size(160.dp).align(Alignment.BottomEnd).offset(x = 40.dp, y = 40.dp).background(Color.White.copy(alpha = 0.04f), CircleShape))
+                    Column(
+                        modifier = Modifier.align(Alignment.CenterStart).padding(start = 24.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🏏", fontSize = 20.sp)
+                            Spacer(Modifier.width(6.dp))
+                            Text("IPL 2026", fontSize = 13.sp, color = Color(0xFFFFCC02), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text("Indian Premier", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, letterSpacing = 0.5.sp)
+                        Text("League", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, letterSpacing = 0.5.sp)
+                        Spacer(Modifier.height(10.dp))
+                        Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFFFFCC02)) {
+                            Text("BET NOW", modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0D1B4B))
+                        }
+                    }
+                    // Right side team icons hint
+                    Column(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("🏆", fontSize = 48.sp)
+                        Text("SEASON 19", fontSize = 10.sp, color = Color.White.copy(alpha = 0.6f), letterSpacing = 0.5.sp)
+                    }
                 }
+            }
+        }
+        // Dot indicators
+        Row(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            repeat(totalBanners) { i ->
+                val isActive = rowState.firstVisibleItemIndex == i
+                Box(modifier = Modifier.size(if (isActive) 18.dp else 6.dp, 6.dp).background(if (isActive) Color.White else Color.White.copy(alpha = 0.4f), RoundedCornerShape(3.dp)))
             }
         }
     }
@@ -6193,19 +6218,18 @@ fun GameIconItem(
 
 @Composable
 fun LiveCockFightHeader(liveEnabled: Boolean, onLiveChange: (Boolean) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Surface(color = Color.White, shape = RoundedCornerShape(4.dp), border = BorderStroke(1.dp, Color.Black)) {
-            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                DrawableImage(
-                    R.drawable.category_cockfight,
-                    contentDescription = null,
-                    modifier = Modifier.size(22.dp),
-                    contentScale = ContentScale.Fit
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Cock Fight", color = Color.Black, fontWeight = FontWeight.Bold)
-            }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left: blinking dot + Cock Fight name
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LiveStreamBlinkingDot()
+            Spacer(Modifier.width(6.dp))
+            Text("Cock Fight", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, color = Color.Black)
         }
+        // Right: LIVE toggle
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("LIVE", fontWeight = FontWeight.Bold, color = if (liveEnabled) Color.Black else Color.Gray)
             Spacer(Modifier.width(8.dp))
@@ -6219,52 +6243,150 @@ fun LiveCockFightHeader(liveEnabled: Boolean, onLiveChange: (Boolean) -> Unit) {
 }
 
 @Composable
-fun LiveMatchCard(onClick: () -> Unit = {}) {
+private fun CockFightHlsStream(
+    modifier: Modifier = Modifier,
+    onSurfaceClick: (() -> Unit)? = null,
+    usePlaybackControls: Boolean = false,
+    /** Home page: loop packaged `cock_fight.mp4`. Cock Fight screen: live HLS. */
+    useHomeLocalVideo: Boolean = false
+) {
     val context = LocalContext.current
-    val exoPlayer = remember {
+    val activity = remember(context) { context.findActivity() }
+    var fullscreen by remember { mutableStateOf(false) }
+
+    val exoPlayer = remember(useHomeLocalVideo) {
         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
-            val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.live_video}")
-            setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
-            repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
-            volume = 0f
+            if (useHomeLocalVideo) {
+                val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cock_fight}")
+                setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
+                repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
+                volume = 0f
+            } else {
+                setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(COCKFIGHT_LIVE_HLS_URL)))
+                repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
+                volume = 1f
+            }
             prepare()
             playWhenReady = true
         }
     }
-    DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
+    DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
+
+    fun exitFullscreen() {
+        fullscreen = false
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    }
+
+    fun enterFullscreen() {
+        fullscreen = true
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    }
+
+    BackHandler(enabled = fullscreen) { exitFullscreen() }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    if (fullscreen) {
+        Dialog(
+            onDismissRequest = { exitFullscreen() },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        ) {
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                AndroidView(
+                    factory = {
+                        androidx.media3.ui.PlayerView(it).apply {
+                            player = exoPlayer
+                            useController = usePlaybackControls
+                            layoutParams = android.view.ViewGroup.LayoutParams(
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                Row(
+                    modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    LiveStreamBlinkingDot()
+                    Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                }
+                IconButton(
+                    onClick = { exitFullscreen() },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+                ) {
+                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                        Icon(Icons.Default.FullscreenExit, contentDescription = "Exit fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+                    }
+                }
+            }
+        }
+    }
 
     Box(
+        modifier = modifier
+            .background(Color.Black)
+            .then(
+                if (onSurfaceClick != null && !fullscreen) Modifier.clickable { onSurfaceClick() }
+                else Modifier
+            )
+    ) {
+        if (!fullscreen) {
+            AndroidView(
+                factory = {
+                    androidx.media3.ui.PlayerView(it).apply {
+                        player = exoPlayer
+                        useController = usePlaybackControls
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(Modifier.fillMaxSize().background(Color.Black))
+        }
+        if (!fullscreen) {
+            Row(
+                modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                LiveStreamBlinkingDot()
+                Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+            }
+            IconButton(
+                onClick = { enterFullscreen() },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+            ) {
+                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.45f)) {
+                    Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LiveMatchCard(onClick: () -> Unit = {}) {
+    CockFightHlsStream(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.Black)
-            .aspectRatio(16f / 9f)
-            .clickable { onClick() }
-    ) {
-        AndroidView(
-            factory = {
-                androidx.media3.ui.PlayerView(it).apply {
-                    player = exoPlayer
-                    useController = false
-                    layoutParams = android.view.ViewGroup.LayoutParams(
-                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-        // LIVE badge
-        Row(
-            modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            LiveStreamBlinkingDot()
-            Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-        }
-    }
+            .aspectRatio(16f / 9f),
+        onSurfaceClick = onClick,
+        usePlaybackControls = false,
+        useHomeLocalVideo = true
+    )
 }
 
 @Composable
