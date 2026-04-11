@@ -13,7 +13,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -48,10 +51,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +69,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -102,6 +113,11 @@ private const val PKG_PAYTM = "net.one97.paytm"
 /** Wallet screen: warm brown ink (readable, no black/charcoal) */
 private val WalletInkWarm = Color(0xFF6D4C41)
 
+/** Home top bar: soft gray-black (not pure black) */
+private val HeaderInkLight = Color(0xFF5C5C5C)
+/** Home top bar: light orange accent (softer than [OrangePrimary]) */
+private val HeaderOrangeLight = Color(0xFFFFB74D)
+
 /**
  * Backend API origin (scheme + host, no trailing slash).
  * Update this when you set your production domain; all API URLs are derived from it.
@@ -123,6 +139,9 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 
 /** Cock fight live stream (HLS). Same host as [API_BASE_URL]. */
 private val COCKFIGHT_LIVE_HLS_URL = apiUrl("/hls/live/stream/index.m3u8")
+
+/** How long the centered “light odds” intro (Meron + Wala) stays visible in fullscreen. */
+private const val COCKFIGHT_CENTER_INTRO_MS = 4 * 60 * 1000L
 
 /** Live cricket feed */
 private val CRICKET_ODDS_API_URL = apiUrl("/api/cricket/live/")
@@ -219,28 +238,68 @@ private val GAME_VERSION_URL = apiUrl("/api/game/version/")
 
 private const val PREFS_AUTH = "auth_prefs"
 private const val PREFS_AUTH_TOKEN_KEY = "access_token"
+private const val PREFS_LOCAL_DEMO_USER = "local_demo_username"
+
+/** Sentinel stored as [AuthTokenStore.accessToken] for embedded demo logins (not a real JWT). */
+private const val LOCAL_DEMO_SESSION_TOKEN = "LOCAL_DEMO_SESSION"
 
 private object AuthTokenStore {
     @Volatile
     var accessToken: String? = null
 
+    /** Display name for the current local demo session (when [isLocalDemoSession]). */
+    @Volatile
+    var localDemoUsername: String? = null
+
+    fun isLocalDemoSession(): Boolean = accessToken == LOCAL_DEMO_SESSION_TOKEN
+
     fun load(context: Context) {
-        accessToken = context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
-            .getString(PREFS_AUTH_TOKEN_KEY, null)
+        val sp = context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
+        accessToken = sp.getString(PREFS_AUTH_TOKEN_KEY, null)
+        localDemoUsername =
+            if (accessToken == LOCAL_DEMO_SESSION_TOKEN) {
+                sp.getString(PREFS_LOCAL_DEMO_USER, null)
+            } else {
+                null
+            }
     }
 
     fun save(context: Context, token: String) {
         accessToken = token
+        localDemoUsername = null
         context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
-            .edit().putString(PREFS_AUTH_TOKEN_KEY, token).apply()
+            .edit()
+            .putString(PREFS_AUTH_TOKEN_KEY, token)
+            .remove(PREFS_LOCAL_DEMO_USER)
+            .apply()
+    }
+
+    fun saveLocalDemo(context: Context, username: String) {
+        val u = username.trim().ifBlank { "user" }
+        accessToken = LOCAL_DEMO_SESSION_TOKEN
+        localDemoUsername = u
+        context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREFS_AUTH_TOKEN_KEY, LOCAL_DEMO_SESSION_TOKEN)
+            .putString(PREFS_LOCAL_DEMO_USER, u)
+            .apply()
     }
 
     fun clear(context: Context) {
         accessToken = null
+        localDemoUsername = null
         context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
-            .edit().remove(PREFS_AUTH_TOKEN_KEY).apply()
+            .edit()
+            .remove(PREFS_AUTH_TOKEN_KEY)
+            .remove(PREFS_LOCAL_DEMO_USER)
+            .apply()
     }
 }
+
+/** Case-insensitive username -> password for offline demo accounts (not on the server). */
+private val LOCAL_APP_LOGIN_USERS: Map<String, String> = mapOf(
+    "svs" to "svs"
+)
 
 private data class BankDetailsUi(
     val accountHolder: String,
@@ -562,6 +621,21 @@ private suspend fun fetchWalletFromApi(): Pair<WalletApiResult?, String?> =
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(null, "Sign in to load payment details.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(
+                WalletApiResult(
+                    bank = null,
+                    upiId = null,
+                    qrImageUrl = null,
+                    paymentMethods = emptyList(),
+                    walletId = null,
+                    balance = "0",
+                    unavailableBalance = "0",
+                    withdrawableBalance = "0"
+                ),
+                null
+            )
+        }
         try {
             val req =
                 Request.Builder()
@@ -590,6 +664,21 @@ private suspend fun fetchPaymentOptionsFromApi(): Pair<WalletApiResult?, String?
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(null, "Sign in to load payment details.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(
+                WalletApiResult(
+                    bank = null,
+                    upiId = null,
+                    qrImageUrl = null,
+                    paymentMethods = emptyList(),
+                    walletId = null,
+                    balance = "0",
+                    unavailableBalance = "0",
+                    withdrawableBalance = "0"
+                ),
+                null
+            )
+        }
         try {
             val req = Request.Builder()
                 .url(AUTH_PAYMENT_METHODS_URL)
@@ -615,6 +704,13 @@ private suspend fun postAuthLogin(context: Context, phone: String, password: Str
     withContext(Dispatchers.IO) {
         try {
             val input = phone.trim()
+            val localKey = input.lowercase(Locale.US)
+            LOCAL_APP_LOGIN_USERS[localKey]?.let { expected ->
+                if (password == expected) {
+                    AuthTokenStore.saveLocalDemo(context, input.ifBlank { localKey })
+                    return@withContext LoginResult(true)
+                }
+            }
             val json = JSONObject().apply {
                 put("username", input)
                 put("password", password)
@@ -700,10 +796,25 @@ private fun parseProfileFromJson(root: JSONObject): ProfileDetailsApi {
     )
 }
 
+private fun localDemoProfile(): ProfileDetailsApi {
+    val u = AuthTokenStore.localDemoUsername?.trim().orEmpty().ifBlank { "user" }
+    return ProfileDetailsApi(
+        id = -1,
+        username = u,
+        email = "",
+        phoneNumber = "",
+        gender = null,
+        isStaff = false
+    )
+}
+
 private suspend fun fetchAuthProfile(): Pair<ProfileDetailsApi?, String?> =
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(null, "Sign in to load your profile.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(localDemoProfile(), null)
+        }
         try {
             val req =
                 Request.Builder()
@@ -736,6 +847,9 @@ private suspend fun postAuthProfile(
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(false, "Sign in required.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(false, "Offline demo account — profile is not saved to the server.")
+        }
         try {
             val json =
                 JSONObject().apply {
@@ -781,6 +895,10 @@ private suspend fun postAuthProfile(
 /** POST [AUTH_LOGOUT_URL] with Bearer token, then clear [AuthTokenStore] (always clears locally). */
 private suspend fun performAuthLogout(context: Context) {
     withContext(Dispatchers.IO) {
+        if (AuthTokenStore.isLocalDemoSession()) {
+            AuthTokenStore.clear(context)
+            return@withContext
+        }
         val token = AuthTokenStore.accessToken
         if (token != null) {
             try {
@@ -863,6 +981,9 @@ private suspend fun fetchAuthBankDetails(): Pair<AuthBankDetailsApi?, String?> =
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(null, "Sign in to load bank details.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(null, "Offline demo account — bank details are not available.")
+        }
         try {
             val req =
                 Request.Builder()
@@ -893,6 +1014,9 @@ private suspend fun postWithdrawInitiate(
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(null, "Sign in required.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(null, "Offline demo account cannot withdraw.")
+        }
         if (amount <= 0) return@withContext Pair(null, "Enter a valid amount.")
         if (withdrawalDetails.isBlank()) return@withContext Pair(null, "Add withdrawal destination details.")
         try {
@@ -958,6 +1082,9 @@ private suspend fun postDepositUploadProof(
 ): Pair<DepositUploadResult?, String?> = withContext(Dispatchers.IO) {
     val token = AuthTokenStore.accessToken
         ?: return@withContext Pair(null, "Sign in required.")
+    if (AuthTokenStore.isLocalDemoSession()) {
+        return@withContext Pair(null, "Offline demo account cannot deposit.")
+    }
     val amountInt = amount.toIntOrNull() ?: 0
     if (amountInt < 100) return@withContext Pair(null, "Minimum deposit amount is ₹100.")
     try {
@@ -2551,6 +2678,426 @@ private val CockWalaBlue = Color(0xFF1976D2)
 private val CockDrawGreen = Color(0xFF2E7D32)
 private val CockDarkBg = Color(0xFF0D0D0D)
 
+private data class CockfightOdd(val label: String, val odd: String, val color: Color)
+private data class CockfightBetSelection(val label: String, val odd: String, val color: Color)
+
+@Composable
+private fun FullscreenBetSlip(
+    selection: CockfightBetSelection,
+    onDismiss: () -> Unit
+) {
+    var stakeText by remember { mutableStateOf("100") }
+    val chips = listOf(100, 200, 500, 1000, 2000, 5000)
+    val stake = stakeText.toIntOrNull() ?: 0
+    val payout = if (stake > 0) "₹%.2f".format(stake * (selection.odd.toDoubleOrNull() ?: 1.0)) else "—"
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { onDismiss() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight()
+                .imePadding()
+                .navigationBarsPadding()
+                .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { },
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = Color(0xFF1A1A1A)
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 10.dp, bottom = 20.dp)
+            ) {
+                // Handle bar
+                Box(
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .background(Color(0xFF444444), CircleShape)
+                )
+                Spacer(Modifier.height(8.dp))
+                // Header row: title + close + pick pill all compact
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Bet Slip", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Inline pick badge
+                        Surface(shape = RoundedCornerShape(6.dp), color = selection.color) {
+                            Text(
+                                "${selection.label}  ${selection.odd}X",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp
+                            )
+                        }
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                // Amount input + payout
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Amount", color = Color(0xFFAAAAAA), fontSize = 12.sp)
+                    Text("Payout: $payout", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = stakeText,
+                    onValueChange = { if (it.all { c -> c.isDigit() } && it.length <= 7) stakeText = it },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    placeholder = { Text("₹ 0", color = Color(0xFF666666)) },
+                    prefix = { Text("₹ ", color = Color.White) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = selection.color,
+                        unfocusedBorderColor = Color(0xFF444444),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = selection.color
+                    )
+                )
+                Spacer(Modifier.height(8.dp))
+                // Quick chips — compact
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    chips.forEach { v ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (stakeText == v.toString()) selection.color else Color(0xFF2A2A2A),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                                .padding(horizontal = 3.dp)
+                                .clickable { stakeText = v.toString() }
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Text(
+                                    if (v >= 1000) "${v / 1000}K" else "$v",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                // ── PLACE BET BUTTON ── large, prominent, always visible
+                Button(
+                    onClick = { onDismiss() },
+                    enabled = stake > 0,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(60.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = selection.color,
+                        disabledContainerColor = Color(0xFF333333)
+                    ),
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
+                ) {
+                    Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "PLACE BET  ₹$stake",
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 18.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Soft pastel gradient stops for Meron / Draw / Wala “light” intro cards. */
+private fun cockfightLightCardGradient(label: String): List<Color> {
+    return when {
+        label.equals("Meron", ignoreCase = true) ->
+            listOf(Color(0xFFFFF5F6), Color(0xFFFFE4E8), Color(0xFFFCE4EC))
+        label.equals("Draw", ignoreCase = true) ->
+            listOf(Color(0xFFF7FFF8), Color(0xFFE8F5E9), Color(0xFFC8E6C9))
+        label.equals("Wala", ignoreCase = true) ->
+            listOf(Color(0xFFF5FAFF), Color(0xFFE3F2FD), Color(0xFFBBDEFB))
+        else -> listOf(Color(0xFFFAFAFA), Color(0xFFF0F0F0), Color(0xFFECEFF1))
+    }
+}
+
+@Composable
+private fun CockFightLightOddIntroCard(
+    odd: CockfightOdd,
+    lightningStagger: Int = 0,
+    onClick: () -> Unit = {}
+) {
+    val corners = RoundedCornerShape(20.dp)
+    val gradient = cockfightLightCardGradient(odd.label)
+    val transition = rememberInfiniteTransition(label = "lightIntro_${odd.label}")
+    val pulse by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1050, delayMillis = lightningStagger * 200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
+    val flash by transition.animateFloat(
+        initialValue = 0.08f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(380, delayMillis = lightningStagger * 140, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "flash"
+    )
+    val shimmer by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, delayMillis = lightningStagger * 220, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
+    val rim = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.55f + pulse * 0.4f),
+            Color.White.copy(alpha = 0.25f + pulse * 0.35f),
+            Color.White.copy(alpha = 0.65f + pulse * 0.3f)
+        )
+    )
+    val elev = (16f + pulse * 10f).dp
+    Box(
+        modifier = Modifier
+            .width(118.dp)
+            .height(158.dp)
+            .scale(1f + pulse * 0.042f)
+            .shadow(
+                elev,
+                corners,
+                ambientColor = odd.color.copy(alpha = 0.12f + pulse * 0.18f),
+                spotColor = Color.White.copy(alpha = 0.15f + flash * 0.45f)
+            )
+            .clip(corners)
+            .clickable(onClick = onClick)
+            .background(Brush.verticalGradient(gradient))
+            .border(BorderStroke((1.5f + pulse * 1.2f).dp, rim), corners)
+    ) {
+        // Diagonal sheen + lightning wash
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.35f + pulse * 0.2f),
+                            Color.Transparent,
+                            Color.White.copy(alpha = 0.12f + flash * 0.35f)
+                        ),
+                        start = Offset(0f, 0f),
+                        end = Offset(240f + shimmer * 80f, 280f - shimmer * 40f)
+                    )
+                )
+        )
+        // Sharp “bolt” flash
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.White.copy(alpha = 0.5f * flash),
+                            Color.Transparent
+                        ),
+                        start = Offset(shimmer * 200f, 0f),
+                        end = Offset(shimmer * 200f + 120f, 200f)
+                    )
+                )
+        )
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                odd.label,
+                color = Color(0xFF37474F),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.4.sp,
+                maxLines = 1,
+                style = TextStyle(
+                    shadow = Shadow(
+                        color = Color.White.copy(alpha = 0.4f + flash * 0.45f),
+                        offset = Offset(0f, 1f),
+                        blurRadius = 4f + flash * 6f
+                    )
+                )
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "${odd.odd}X",
+                color = odd.color.copy(alpha = 0.92f + flash * 0.08f),
+                fontSize = 26.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                style = TextStyle(
+                    shadow = Shadow(
+                        color = Color.White.copy(alpha = 0.35f + pulse * 0.4f),
+                        offset = Offset(0f, 0f),
+                        blurRadius = 8f + flash * 10f
+                    )
+                )
+            )
+        }
+    }
+}
+
+/**
+ * Cock fight fullscreen: Meron + Wala light cards only (no Draw, no title) for [COCKFIGHT_CENTER_INTRO_MS].
+ * Meron enters from below; Wala enters from the right.
+ */
+@Composable
+private fun BoxScope.CockFightCenterIntroOddsPanel(
+    odds: List<CockfightOdd>,
+    onPickOdd: (CockfightOdd) -> Unit
+) {
+    val meron = remember(odds) {
+        odds.find { it.label.equals("Meron", ignoreCase = true) }
+            ?: CockfightOdd("Meron", "1.90", CockMeronRed)
+    }
+    val wala = remember(odds) {
+        odds.find { it.label.equals("Wala", ignoreCase = true) }
+            ?: CockfightOdd("Wala", "1.92", CockWalaBlue)
+    }
+    val meronFromBelow = remember { Animatable(300f) }
+    val walaFromRight = remember { Animatable(340f) }
+    val meronY by produceState(300f) {
+        snapshotFlow { meronFromBelow.value }.collect { value = it }
+    }
+    val walaX by produceState(340f) {
+        snapshotFlow { walaFromRight.value }.collect { value = it }
+    }
+    LaunchedEffect(Unit) {
+        launch {
+            meronFromBelow.animateTo(
+                0f,
+                animationSpec = tween(780, easing = FastOutSlowInEasing)
+            )
+        }
+        launch {
+            walaFromRight.animateTo(
+                0f,
+                animationSpec = tween(780, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+    Row(
+        modifier = Modifier
+            .align(Alignment.Center)
+            .padding(horizontal = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(22.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.offset(y = meronY.dp)) {
+            CockFightLightOddIntroCard(
+                meron,
+                lightningStagger = 0,
+                onClick = { onPickOdd(meron) }
+            )
+        }
+        Box(modifier = Modifier.offset(x = walaX.dp)) {
+            CockFightLightOddIntroCard(
+                wala,
+                lightningStagger = 1,
+                onClick = { onPickOdd(wala) }
+            )
+        }
+    }
+}
+
+/** Pulsing border / scale “lightning” highlight for Meron / Draw / Wala in fullscreen. */
+@Composable
+private fun CockfightOddsBetCard(
+    label: String,
+    odd: String,
+    baseColor: Color,
+    staggerIndex: Int,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val transition = rememberInfiniteTransition(label = "cockfightOddGlow_$staggerIndex")
+    val glow by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 950,
+                delayMillis = staggerIndex * 320,
+                easing = FastOutSlowInEasing
+            ),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glow"
+    )
+    val surfaceColor = lerp(baseColor, Color.White, glow * 0.12f)
+    Surface(
+        modifier = modifier
+            .height(48.dp)
+            .scale(1f + glow * 0.05f)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        color = surfaceColor,
+        border = BorderStroke(
+            width = 2.dp,
+            color = Color.White.copy(alpha = 0.35f + glow * 0.55f)
+        ),
+        shadowElevation = (glow * 6).dp
+    ) {
+        Column(
+            Modifier.fillMaxSize().padding(4.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                label,
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 12.sp
+            )
+            Text(
+                "${odd}X",
+                color = Color.White.copy(alpha = 0.88f + glow * 0.12f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
 @Composable
 fun CockFightLiveScreen(
     onBack: () -> Unit,
@@ -2558,9 +3105,6 @@ fun CockFightLiveScreen(
     onOpenProfile: () -> Unit
 ) {
     BackHandler { onBack() }
-    val context = LocalContext.current
-    var selectedChip by remember { mutableStateOf(100) }
-    val chips = listOf(50, 100, 200, 300, 500, 1000, 2500, 5000)
     val roadmapPattern = remember {
         listOf(
             listOf("M", "W", "M", "D", "W", "M", "M", "W", "W", "M", "D", "M"),
@@ -2577,7 +3121,9 @@ fun CockFightLiveScreen(
         val (w, _) = fetchWalletFromApi()
         cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
     }
+    var isVideoFullscreen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(CockDarkBg)) {
+        if (!isVideoFullscreen) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -2595,8 +3141,15 @@ fun CockFightLiveScreen(
                 fontSize = 15.sp,
                 letterSpacing = 0.6.sp
             )
-            WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
+                IconButton(onClick = onOpenProfile) {
+                    Icon(Icons.Default.Settings, contentDescription = "Profile", tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+            }
         }
+        }
+        if (!isVideoFullscreen) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = OrangePrimary.copy(alpha = 0.35f)
@@ -2608,6 +3161,7 @@ fun CockFightLiveScreen(
                 color = Color.Black,
                 maxLines = 2
             )
+        }
         }
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -2622,9 +3176,19 @@ fun CockFightLiveScreen(
                         .clip(RoundedCornerShape(10.dp)),
                     onSurfaceClick = null,
                     usePlaybackControls = true,
-                    useHomeLocalVideo = false
+                    useHomeLocalVideo = false,
+                    odds = listOf(
+                        CockfightOdd("Meron", "1.90", CockMeronRed),
+                        CockfightOdd("Draw", "4.46", CockDrawGreen),
+                        CockfightOdd("Wala", "1.92", CockWalaBlue)
+                    ),
+                    onBackFromFullscreen = onBack,
+                    walletBalance = cockfightWalletText,
+                    onFullscreenChanged = { isVideoFullscreen = it },
+                    startFullscreen = true
                 )
             }
+            if (!isVideoFullscreen) {
             item {
                 Box(
                     modifier = Modifier
@@ -2647,153 +3211,8 @@ fun CockFightLiveScreen(
                     )
                 }
             }
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(88.dp)
-                            .clickable {
-                                Toast.makeText(context, "Meron @ 1.90", Toast.LENGTH_SHORT).show()
-                            },
-                        shape = RoundedCornerShape(10.dp),
-                        color = CockMeronRed
-                    ) {
-                        Column(
-                            Modifier.fillMaxSize().padding(8.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("1.90X", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
-                            Text("Meron", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(88.dp)
-                            .clickable {
-                                Toast.makeText(context, "Draw @ 4.46", Toast.LENGTH_SHORT).show()
-                            },
-                        shape = RoundedCornerShape(10.dp),
-                        color = CockDrawGreen
-                    ) {
-                        Column(
-                            Modifier.fillMaxSize().padding(8.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("4.46X", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
-                            Text("Draw", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(88.dp)
-                            .clickable {
-                                Toast.makeText(context, "Wala @ 1.92", Toast.LENGTH_SHORT).show()
-                            },
-                        shape = RoundedCornerShape(10.dp),
-                        color = CockWalaBlue
-                    ) {
-                        Column(
-                            Modifier.fillMaxSize().padding(8.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("1.92X", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
-                            Text("Wala", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
             }
-            item {
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    items(chips.size) { i ->
-                        val v = chips[i]
-                        val sel = selectedChip == v
-                        Surface(
-                            shape = CircleShape,
-                            color = if (sel) OrangePrimary else Color(0xFF2A2A2A),
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clickable { selectedChip = v },
-                            border = if (sel) BorderStroke(2.dp, Color.White) else null
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Text(
-                                    "$v",
-                                    color = if (sel) Color.Black else Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    IconButton(onClick = onOpenProfile) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF2A2A2A),
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Icon(Icons.Default.Settings, null, tint = Color.White, modifier = Modifier.size(22.dp))
-                            }
-                        }
-                    }
-                    Button(
-                        onClick = {
-                            Toast.makeText(
-                                context,
-                                "Place bet ₹$selectedChip",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
-                    ) {
-                        Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Place Bet…", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    }
-                    IconButton(onClick = onWallet) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF2A2A2A),
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Icon(Icons.Default.Wallet, null, tint = Color.White, modifier = Modifier.size(22.dp))
-                            }
-                        }
-                    }
-                }
-            }
+            if (!isVideoFullscreen) {
             item {
                 Card(
                     modifier = Modifier
@@ -2838,6 +3257,7 @@ fun CockFightLiveScreen(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -4110,6 +4530,9 @@ private suspend fun fetchMyWithdrawals(): Pair<List<WithdrawRecordApi>, String?>
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(emptyList(), "Sign in to view withdrawals.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(emptyList(), null)
+        }
         try {
             val req =
                 Request.Builder()
@@ -4137,6 +4560,9 @@ private suspend fun fetchMyDeposits(): Pair<List<DepositRecordApi>, String?> =
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(emptyList(), "Sign in to view deposits.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(emptyList(), null)
+        }
         try {
             val req =
                 Request.Builder()
@@ -6011,44 +6437,79 @@ fun TopHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.Black)
+            .background(Color.White)
             .padding(start = 0.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // Full wordmark visible (fit inside bar; black fills any letterboxing)
+        // Single-line wordmark; K/R soft black, O light orange
+        val kokorokoWordmark = buildAnnotatedString {
+            val w = SpanStyle(color = HeaderInkLight, fontWeight = FontWeight.Black)
+            val o = SpanStyle(color = HeaderOrangeLight, fontWeight = FontWeight.Black)
+            withStyle(w) { append("K") }
+            withStyle(o) { append("O") }
+            withStyle(w) { append("K") }
+            withStyle(o) { append("O") }
+            withStyle(w) { append("R") }
+            withStyle(o) { append("O") }
+            withStyle(w) { append("K") }
+            withStyle(o) { append("O") }
+        }
         Box(
             modifier = Modifier
                 .weight(1f)
                 .height(58.dp)
-                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .padding(start = 8.dp, end = 4.dp),
+            contentAlignment = Alignment.CenterStart
         ) {
-            DrawableImage(
-                R.drawable.kokoroko_logo_header,
-                "Kokoroko",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
-                alignment = Alignment.Center
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, Color(0xFFE0E0E0), CircleShape)
+                ) {
+                    DrawableImage(
+                        R.drawable.gamelogo,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        alignment = Alignment.Center
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = kokorokoWordmark,
+                    fontSize = 28.sp,
+                    letterSpacing = 0.5.sp,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+            }
         }
-        // Wallet on right — same style as WalletBalanceChip
+        // Wallet on right — light chip so it reads on white bar
         Surface(
             onClick = onWalletClick,
-            color = Color.White,
+            color = Color(0xFFF5F5F5),
             shape = RoundedCornerShape(14.dp),
-            shadowElevation = 2.dp,
-            border = BorderStroke(1.dp, Color(0xFFEEEEEE))
+            shadowElevation = 1.dp,
+            border = BorderStroke(1.dp, Color(0xFFE0E0E0))
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val amountDigits = walletBalanceText.trim().removePrefix("₹").trim()
-                Text("₹", color = OrangePrimary, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, letterSpacing = 0.sp)
-                Text(amountDigits, color = Color.Black, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, letterSpacing = 0.sp)
+                Text("₹", color = HeaderOrangeLight, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, letterSpacing = 0.sp)
+                Text(amountDigits, color = HeaderInkLight, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, letterSpacing = 0.sp)
                 Spacer(Modifier.width(8.dp))
                 Box(
-                    modifier = Modifier.size(22.dp).background(OrangePrimary, CircleShape),
+                    modifier = Modifier.size(22.dp).background(HeaderOrangeLight, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White, modifier = Modifier.size(14.dp))
@@ -6084,10 +6545,11 @@ fun HeaderIconItem(label: String, icon: ImageVector? = null, imageRes: Int? = nu
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BannerCarousel(homeListState: LazyListState) {
-    val totalBanners = 2 // 0 = gundu image, 1 = IPL composable
+    val totalBanners = 1
     val rowState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = rowState)
     LaunchedEffect(totalBanners) {
+        if (totalBanners <= 1) return@LaunchedEffect
         while (true) {
             delay(3500)
             snapshotFlow { homeListState.isScrollInProgress }
@@ -6115,44 +6577,6 @@ fun BannerCarousel(homeListState: LazyListState) {
             item(key = "gundu") {
                 Box(modifier = Modifier.fillParentMaxWidth().fillMaxHeight()) {
                     DrawableImage(R.drawable.banner_gundu, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                }
-            }
-            // Slide 1: IPL banner
-            item(key = "ipl") {
-                Box(
-                    modifier = Modifier
-                        .fillParentMaxWidth()
-                        .fillMaxHeight()
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(Color(0xFF0D1B4B), Color(0xFF1A3A8F), Color(0xFF0D1B4B))
-                            )
-                        )
-                ) {
-                    // Subtle decorative circle
-                    Box(modifier = Modifier.size(220.dp).offset(x = (-40).dp, y = (-60).dp).background(Color.White.copy(alpha = 0.04f), CircleShape))
-                    Box(modifier = Modifier.size(160.dp).align(Alignment.BottomEnd).offset(x = 40.dp, y = 40.dp).background(Color.White.copy(alpha = 0.04f), CircleShape))
-                    Column(
-                        modifier = Modifier.align(Alignment.CenterStart).padding(start = 24.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("🏏", fontSize = 20.sp)
-                            Spacer(Modifier.width(6.dp))
-                            Text("IPL 2026", fontSize = 13.sp, color = Color(0xFFFFCC02), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Text("Indian Premier", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, letterSpacing = 0.5.sp)
-                        Text("League", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, letterSpacing = 0.5.sp)
-                        Spacer(Modifier.height(10.dp))
-                        Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFFFFCC02)) {
-                            Text("BET NOW", modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0D1B4B))
-                        }
-                    }
-                    // Right side team icons hint
-                    Column(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("🏆", fontSize = 48.sp)
-                        Text("SEASON 19", fontSize = 10.sp, color = Color.White.copy(alpha = 0.6f), letterSpacing = 0.5.sp)
-                    }
                 }
             }
         }
@@ -6223,10 +6647,7 @@ fun LiveCockFightHeader(liveEnabled: Boolean, onLiveChange: (Boolean) -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left: blinking dot + Cock Fight name
         Row(verticalAlignment = Alignment.CenterVertically) {
-            LiveStreamBlinkingDot()
-            Spacer(Modifier.width(6.dp))
             Text("Cock Fight", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, color = Color.Black)
         }
         // Right: LIVE toggle
@@ -6248,11 +6669,41 @@ private fun CockFightHlsStream(
     onSurfaceClick: (() -> Unit)? = null,
     usePlaybackControls: Boolean = false,
     /** Home page: loop packaged `cock_fight.mp4`. Cock Fight screen: live HLS. */
-    useHomeLocalVideo: Boolean = false
+    useHomeLocalVideo: Boolean = false,
+    odds: List<CockfightOdd> = emptyList(),
+    showFullscreenButton: Boolean = true,
+    onBackFromFullscreen: (() -> Unit)? = null,
+    walletBalance: String = "",
+    onFullscreenChanged: ((Boolean) -> Unit)? = null,
+    startFullscreen: Boolean = false
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     var fullscreen by remember { mutableStateOf(false) }
+    var betSelection by remember { mutableStateOf<CockfightBetSelection?>(null) }
+
+    // Auto-enter fullscreen when opened from the cock fight screen
+    LaunchedEffect(startFullscreen) {
+        if (startFullscreen && !fullscreen) {
+            fullscreen = true
+            onFullscreenChanged?.invoke(true)
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                activity?.window?.insetsController?.let {
+                    it.hide(android.view.WindowInsets.Type.systemBars())
+                    it.systemBarsBehavior =
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                activity?.window?.decorView?.systemUiVisibility = (
+                    android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+            }
+        }
+    }
 
     val exoPlayer = remember(useHomeLocalVideo) {
         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
@@ -6274,12 +6725,36 @@ private fun CockFightHlsStream(
 
     fun exitFullscreen() {
         fullscreen = false
+        onFullscreenChanged?.invoke(false)
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            activity?.window?.insetsController?.show(
+                android.view.WindowInsets.Type.systemBars()
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            activity?.window?.decorView?.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+        }
     }
 
     fun enterFullscreen() {
         fullscreen = true
+        onFullscreenChanged?.invoke(true)
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            activity?.window?.insetsController?.let {
+                it.hide(android.view.WindowInsets.Type.systemBars())
+                it.systemBarsBehavior =
+                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            activity?.window?.decorView?.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+        }
     }
 
     BackHandler(enabled = fullscreen) { exitFullscreen() }
@@ -6287,15 +6762,61 @@ private fun CockFightHlsStream(
     DisposableEffect(Unit) {
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                activity?.window?.insetsController?.show(android.view.WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                activity?.window?.decorView?.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+            }
         }
     }
 
     if (fullscreen) {
-        Dialog(
-            onDismissRequest = { exitFullscreen() },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        Popup(
+            alignment = Alignment.Center,
+            properties = PopupProperties(
+                focusable = true,
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false,
+                clippingEnabled = false
+            )
         ) {
-            Box(Modifier.fillMaxSize().background(Color.Black)) {
+            // Back press inside the Popup window minimises fullscreen instead of going back
+            BackHandler { exitFullscreen() }
+            val view = LocalView.current
+            SideEffect {
+                val window = (view.parent as? android.view.ViewGroup)
+                    ?.rootView
+                    ?.let { (it.context as? android.app.Activity)?.window }
+                window?.let { w ->
+                    w.setLayout(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        w.insetsController?.let {
+                            it.hide(android.view.WindowInsets.Type.systemBars())
+                            it.systemBarsBehavior =
+                                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        w.decorView.systemUiVisibility = (
+                            android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                            or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        )
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            ) {
+                // Video player
                 AndroidView(
                     factory = {
                         androidx.media3.ui.PlayerView(it).apply {
@@ -6309,21 +6830,112 @@ private fun CockFightHlsStream(
                     },
                     modifier = Modifier.fillMaxSize()
                 )
-                Row(
-                    modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    LiveStreamBlinkingDot()
-                    Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+
+                // Center intro: Meron + Wala light cards (see [COCKFIGHT_CENTER_INTRO_MS])
+                var centerIntroVisible by remember { mutableStateOf(true) }
+                LaunchedEffect(Unit) {
+                    delay(COCKFIGHT_CENTER_INTRO_MS)
+                    centerIntroVisible = false
                 }
-                IconButton(
-                    onClick = { exitFullscreen() },
-                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+                if (centerIntroVisible) {
+                    CockFightCenterIntroOddsPanel(
+                        odds = odds,
+                        onPickOdd = { odd ->
+                            betSelection = CockfightBetSelection(odd.label, odd.odd, odd.color)
+                        }
+                    )
+                }
+
+                // Top bar: back arrow (left) + wallet balance (right, white bg)
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
-                        Icon(Icons.Default.FullscreenExit, contentDescription = "Exit fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+                    // ← Back arrow — exits fullscreen AND navigates back to cock fight page
+                    IconButton(onClick = {
+                        exitFullscreen()
+                        onBackFromFullscreen?.invoke()
+                    }) {
+                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.padding(8.dp))
+                        }
                     }
+                    // Wallet balance — white pill on the top-right
+                    if (walletBalance.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color.White
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(16.dp))
+                                Text(walletBalance, color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // Centre LIVE badge (hidden while intro odds panel is showing)
+                if (betSelection == null && !centerIntroVisible) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.Center),
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.Black.copy(alpha = 0.55f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            LiveStreamBlinkingDot()
+                            Text(
+                                "LIVE",
+                                color = Color(0xFFE53935),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.sp
+                            )
+                        }
+                    }
+                }
+
+                // Bottom odds bar (only when no bet slip open) — sit lower, above system nav / home gesture
+                if (betSelection == null && odds.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        odds.forEachIndexed { index, o ->
+                            CockfightOddsBetCard(
+                                label = o.label,
+                                odd = o.odd,
+                                baseColor = o.color,
+                                staggerIndex = index,
+                                modifier = Modifier.weight(1f),
+                                onClick = { betSelection = CockfightBetSelection(o.label, o.odd, o.color) }
+                            )
+                        }
+                    }
+                }
+
+                // Bet slip overlay
+                betSelection?.let { sel ->
+                    FullscreenBetSlip(
+                        selection = sel,
+                        onDismiss = { betSelection = null }
+                    )
                 }
             }
         }
@@ -6363,12 +6975,14 @@ private fun CockFightHlsStream(
                 LiveStreamBlinkingDot()
                 Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
             }
-            IconButton(
-                onClick = { enterFullscreen() },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
-            ) {
-                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.45f)) {
-                    Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+            if (showFullscreenButton) {
+                IconButton(
+                    onClick = { enterFullscreen() },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                ) {
+                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.45f)) {
+                        Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+                    }
                 }
             }
         }
@@ -6385,7 +6999,8 @@ fun LiveMatchCard(onClick: () -> Unit = {}) {
             .aspectRatio(16f / 9f),
         onSurfaceClick = onClick,
         usePlaybackControls = false,
-        useHomeLocalVideo = true
+        useHomeLocalVideo = true,
+        showFullscreenButton = false
     )
 }
 
