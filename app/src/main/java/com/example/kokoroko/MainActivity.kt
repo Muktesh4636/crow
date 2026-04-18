@@ -1916,8 +1916,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(onLogout: () -> Unit) {
     val context = LocalContext.current
+    val mainScreenScope = rememberCoroutineScope()
     var selectedTab by remember { mutableStateOf("home") }
     var currentSubScreen by remember { mutableStateOf("main") }
+    /** When opening [PaymentOptionsScreen], optional sub-screen to restore on back (e.g. cock fight). */
+    var paymentReturnSubScreen by remember { mutableStateOf<String?>(null) }
     /** Wallet deposit flow: `"upi"` = QR + UPI apps only; `"bank"` = bank details only */
     var walletDepositMethod by remember { mutableStateOf("upi") }
     var walletDepositAmount by remember { mutableStateOf("") }
@@ -1987,7 +1990,8 @@ fun MainScreen(onLogout: () -> Unit) {
                     PaymentOptionsScreen(
                         onBack = {
                             walletDepositMethod = "upi"
-                            currentSubScreen = "main"
+                            currentSubScreen = paymentReturnSubScreen ?: "main"
+                            paymentReturnSubScreen = null
                         },
                         walletDepositMethod = walletDepositMethod,
                         depositAmount = walletDepositAmount,
@@ -2029,8 +2033,18 @@ fun MainScreen(onLogout: () -> Unit) {
                     CockFightLiveScreen(
                         onBack = { currentSubScreen = "main" },
                         onWallet = {
-                            selectedTab = "wallet"
-                            currentSubScreen = "main"
+                            paymentReturnSubScreen = "cock_fight_live"
+                            mainScreenScope.launch {
+                                preloadedPaymentLoading = true
+                                preloadedPaymentError = null
+                                val (w, err) = fetchPaymentOptionsFromApi()
+                                preloadedPaymentLoading = false
+                                preloadedPaymentOptions = w
+                                preloadedPaymentError = err
+                                walletDepositMethod = "upi"
+                                walletDepositAmount = "1000"
+                                currentSubScreen = "payment_options"
+                            }
                         },
                         onOpenProfile = {
                             selectedTab = "profile"
@@ -2071,6 +2085,7 @@ fun MainScreen(onLogout: () -> Unit) {
                                 WalletScreen(
                                     onBack = { selectedTab = "home" },
                                     onDepositClick = { method, amount ->
+                                        paymentReturnSubScreen = null
                                         walletDepositMethod = method
                                         walletDepositAmount = amount
                                         currentSubScreen = "payment_options"
@@ -3184,6 +3199,7 @@ fun CockFightLiveScreen(
                     ),
                     onBackFromFullscreen = onBack,
                     walletBalance = cockfightWalletText,
+                    onWalletBalanceClick = onWallet,
                     onFullscreenChanged = { isVideoFullscreen = it },
                     startFullscreen = true
                 )
@@ -3487,17 +3503,22 @@ fun LoginScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            HeaderIconItem("Tutorials", imageRes = R.drawable.gamelogo)
+            HeaderIconItem("Promotions", imageRes = R.mipmap.ic_launcher)
             HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight)
             HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata)
             HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket)
         }
         Spacer(modifier = Modifier.height(40.dp))
+        // Same artwork as launcher icon ([R.mipmap.ic_launcher]), circular frame
         DrawableImage(
-            R.drawable.gamelogo,
-            contentDescription = "Logo",
-            modifier = Modifier.size(150.dp).clip(CircleShape).border(2.dp, Color.Black, CircleShape),
-            contentScale = ContentScale.Crop
+            R.mipmap.ic_launcher,
+            contentDescription = "Hen Fight",
+            modifier = Modifier
+                .size(150.dp)
+                .clip(CircleShape)
+                .border(2.dp, Color.Black, CircleShape),
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.Center
         )
         Spacer(modifier = Modifier.height(20.dp))
         Text("Login", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black)
@@ -3680,13 +3701,14 @@ fun SignupScreen(onBack: () -> Unit, onRegistered: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             DrawableImage(
-                R.drawable.gamelogo,
-                contentDescription = null,
+                R.mipmap.ic_launcher,
+                contentDescription = "Hen Fight",
                 modifier = Modifier
-                    .size(100.dp)
+                    .size(150.dp)
                     .clip(CircleShape)
                     .border(2.dp, Color.Black, CircleShape),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                alignment = Alignment.Center
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
@@ -6687,6 +6709,8 @@ private fun CockFightHlsStream(
     showFullscreenButton: Boolean = true,
     onBackFromFullscreen: (() -> Unit)? = null,
     walletBalance: String = "",
+    /** Tap balance pill in fullscreen (e.g. open deposit). Null = not clickable. */
+    onWalletBalanceClick: (() -> Unit)? = null,
     onFullscreenChanged: ((Boolean) -> Unit)? = null,
     startFullscreen: Boolean = false
 ) {
@@ -6877,9 +6901,11 @@ private fun CockFightHlsStream(
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.padding(8.dp))
                         }
                     }
-                    // Wallet balance — white pill on the top-right
+                    // Wallet balance — white pill on the top-right (tap opens deposit when callback set)
                     if (walletBalance.isNotEmpty()) {
                         Surface(
+                            onClick = { onWalletBalanceClick?.invoke() },
+                            enabled = onWalletBalanceClick != null,
                             shape = RoundedCornerShape(20.dp),
                             color = Color.White
                         ) {
@@ -7111,32 +7137,60 @@ private fun HenVideoCard(
 fun PromotionsScreen(onBack: () -> Unit) {
     BackHandler { onBack() }
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null) }
-            Text("PROMOTIONS", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Surface(color = OrangePrimary, shape = RoundedCornerShape(8.dp), modifier = Modifier.size(40.dp)) {
-                Box(contentAlignment = Alignment.Center) {
-                    DrawableImage(
-                        R.drawable.category_promotions,
-                        contentDescription = null,
-                        modifier = Modifier.size(28.dp).clip(RoundedCornerShape(4.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 8.dp)
+        ) {
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
             }
+            Text(
+                "PROMOTIONS",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
         Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            PromotionCard("Bike", "₹155000", "₹20000", "₹0", R.drawable.promotion_bike, Modifier.weight(1f))
-            PromotionCard("Laptop", "₹80000", "₹100", "₹10", R.drawable.promotion_laptop, Modifier.weight(1f))
+            PromotionCard(
+                title = "E‑Bike",
+                referralBanner = "Refer 100 members",
+                rewardDescription = "Get an e‑bike when 100 successful referrals complete signup.",
+                imageRes = R.drawable.promotion_bike,
+                modifier = Modifier.weight(1f)
+            )
+            PromotionCard(
+                title = "Laptop",
+                referralBanner = "Refer 50 members",
+                rewardDescription = "Get a laptop when 50 successful referrals complete signup.",
+                imageRes = R.drawable.promotion_laptop,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
 
 @Composable
-fun PromotionCard(title: String, originalPrice: String, discountPrice: String, minWallet: String, imageRes: Int, modifier: Modifier = Modifier) {
-    Card(modifier = modifier.height(280.dp), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+fun PromotionCard(
+    title: String,
+    referralBanner: String,
+    rewardDescription: String,
+    imageRes: Int,
+    modifier: Modifier = Modifier
+) {
+    Card(modifier = modifier.height(300.dp), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Surface(color = Color(0xFFFFD54F), shape = RoundedCornerShape(bottomEnd = 12.dp), modifier = Modifier.padding(bottom = 8.dp)) { Text("Min Wallet - $minWallet", fontSize = 10.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontWeight = FontWeight.Bold) }
+            Surface(color = Color(0xFFFFD54F), shape = RoundedCornerShape(bottomEnd = 12.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                Text(
+                    referralBanner,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF5D4037)
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -7154,11 +7208,14 @@ fun PromotionCard(title: String, originalPrice: String, discountPrice: String, m
                 )
             }
             Column(modifier = Modifier.padding(12.dp)) {
-                Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp); Spacer(Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column { Text(originalPrice, fontSize = 12.sp, color = Color.LightGray, textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough); Text(discountPrice, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold) }
-                    Surface(modifier = Modifier.size(40.dp), shape = RoundedCornerShape(topStart = 12.dp, bottomEnd = 12.dp), color = Color.LightGray.copy(alpha = 0.5f)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Lock, null, tint = Color.White, modifier = Modifier.size(20.dp)) } }
-                }
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    rewardDescription,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    color = Color.DarkGray
+                )
             }
         }
     }
