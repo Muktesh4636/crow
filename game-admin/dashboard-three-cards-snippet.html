@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard — Cricket, Gundu Ata, Cock fight</title>
+  <style>
+    /*
+     * INTEGRATION (fight.pravoo.in game-admin):
+     * After login, your dashboard template should render THREE separate blocks.
+     * Copy the HTML inside <div id="kokoroko-dashboard-game-sections"> below
+     * into your admin dashboard view (Django/Jinja/Laravel/Blade, etc.).
+     * Update each href to match real URLs on your server.
+     */
+    :root {
+      --card-bg: #ffffff;
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --accent: #ea580c;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #f3f4f6;
+      color: var(--text);
+      padding: 24px 16px 40px;
+    }
+    #kokoroko-dashboard-game-sections {
+      max-width: 1120px;
+      margin: 0 auto;
+    }
+    .dash-heading {
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin: 0 0 8px;
+      color: var(--text);
+    }
+    .dash-sub {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin: 0 0 22px;
+    }
+    .game-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      align-items: stretch;
+    }
+    @media (max-width: 900px) {
+      .game-cards-grid { grid-template-columns: 1fr; }
+    }
+    /* Each game is its own region (separate on screen and for accessibility) */
+    .game-region {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+    .game-region-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .game-card {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 18px 18px;
+      text-decoration: none;
+      color: inherit;
+      box-shadow: var(--shadow);
+      transition: border-color 0.15s, box-shadow 0.15s, transform 0.12s;
+      border-top: 4px solid var(--stripe);
+    }
+    .game-card:hover {
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+      transform: translateY(-2px);
+    }
+    .game-card.stripe-cricket { --stripe: #16a34a; }
+    .game-card.stripe-gundu { --stripe: #ea580c; }
+    .game-card.stripe-cock { --stripe: #db2777; }
+    .game-card-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+      margin-bottom: 14px;
+    }
+    .game-card-icon.cricket { background: #dcfce7; }
+    .game-card-icon.gundu { background: #ffedd5; }
+    .game-card-icon.cock { background: #fce7f3; }
+    .game-card h3 {
+      margin: 0 0 8px;
+      font-size: 1.2rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .game-card p {
+      margin: 0;
+      flex: 1;
+      font-size: 0.875rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .game-card-footer {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid #f3f4f6;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <!-- ========== START: paste from here into /game-admin/dashboard/ template ========== -->
+  <div id="kokoroko-dashboard-game-sections">
+    <h1 class="dash-heading">Game admin</h1>
+    <p class="dash-sub">Choose a product — Cricket, Gundu Ata, and Cock fight are separate areas.</p>
+
+    <div class="game-cards-grid">
+      <!-- 1. Cricket — separate section -->
+      <section class="game-region" aria-labelledby="region-cricket-title">
+        <div class="game-region-label" id="region-cricket-label">Section 1</div>
+        <a class="game-card stripe-cricket" href="/game-admin/cricket/" id="region-cricket-title">
+          <div class="game-card-icon cricket" aria-hidden="true">🏏</div>
+          <h3>Cricket</h3>
+          <p>Cricket feed, events, odds, and cricket-only settings. Does not mix with other games.</p>
+          <div class="game-card-footer">Open cricket admin →</div>
+        </a>
+      </section>
+
+      <!-- 2. Gundu Ata — separate section -->
+      <section class="game-region" aria-labelledby="region-gundu-title">
+        <div class="game-region-label" id="region-gundu-label">Section 2</div>
+        <a class="game-card stripe-gundu" href="/game-admin/gundu-ata/" id="region-gundu-title">
+          <div class="game-card-icon gundu" aria-hidden="true">🎯</div>
+          <h3>Gundu Ata</h3>
+          <p>Gundu Ata markets, pricing, and operations — isolated from cricket and cock fight.</p>
+          <div class="game-card-footer">Open Gundu Ata admin →</div>
+        </a>
+      </section>
+
+      <!-- 3. Cock fight — separate section -->
+      <section class="game-region" aria-labelledby="region-cock-title">
+        <div class="game-region-label" id="region-cock-label">Section 3</div>
+        <a class="game-card stripe-cock" href="/game-admin/cock-fight/" id="region-cock-title">
+          <div class="game-card-icon cock" aria-hidden="true">🐓</div>
+          <h3>Cock fight</h3>
+          <p>Streams, matches, and cock-fight-specific controls — separate from other products.</p>
+          <div class="game-card-footer">Open cock fight admin →</div>
+        </a>
+      </section>
+    </div>
+  </div>
+  <!-- ========== END paste ========== -->
+</body>
+</html>

@@ -5386,12 +5386,25 @@ private fun PaymentOptionsScreen(
     }
 
     val bankDetails = wallet?.bank
-    val methodsToShow = (wallet?.paymentMethods ?: emptyList())
-        .filter { m ->
+    // Don't require per-row upi_id: backend often sends one global VPA on the wallet; [launchWalletPaymentMethod] uses row ?: apiUpiId.
+    // Also allow deep links / package-only rows.
+    val methodsToShow = run {
+        val raw = wallet?.paymentMethods ?: emptyList()
+        val filtered = raw.filter { m ->
             val t = m.type.lowercase(Locale.US)
-            t != "bank" && t != "qr" && !m.upiId.isNullOrBlank()
+            if (t == "bank" || t == "qr") return@filter false
+            !m.upiId.isNullOrBlank()
+                || !wallet?.upiId.isNullOrBlank()
+                || !m.deepLink.isNullOrBlank()
+                || !m.packageName.isNullOrBlank()
+        }.distinctBy { it.type.lowercase(Locale.US) }
+        if (filtered.isNotEmpty()) filtered
+        else if (!walletLoading && walletError == null && !wallet?.upiId.isNullOrBlank()) {
+            defaultWalletPaymentMethods()
+        } else {
+            emptyList()
         }
-        .distinctBy { it.type.lowercase(Locale.US) }
+    }
 
     val qrImageUrl = wallet?.qrImageUrl
     val timerMins = timerSeconds / 60
