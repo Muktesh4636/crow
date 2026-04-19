@@ -95,6 +95,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.roundToInt
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -379,6 +380,13 @@ private fun JSONObject.optIntValue(key: String, default: Int = 0): Int {
 }
 
 /** Parses list withdrawal amounts: int/long/double in JSON or decimal strings like "500.00". */
+/** Deposit row amount as rupees int (API may send JSON number or decimal string). */
+private fun JSONObject.optRupeeAmountInt(key: String, default: Int = 0): Int {
+    if (!has(key) || isNull(key)) return default
+    val s = optRupeeWithdrawAmount(key)
+    return s.toDoubleOrNull()?.roundToInt() ?: s.toIntOrNull() ?: default
+}
+
 private fun JSONObject.optRupeeWithdrawAmount(key: String): String {
     if (!has(key) || isNull(key)) return "0"
     return when (val v = opt(key)) {
@@ -1509,8 +1517,8 @@ private fun formatOdd(item: JSONObject, vararg keys: String): String {
     return "-"
 }
 
-/** Fallback when /api/support/contacts/ fails or returns empty */
-private const val CONTACT_PHONE_WHATSAPP_TELEGRAM = "91987654321"
+/** Fallback when /api/support/contacts/ fails or returns empty (must match production support WhatsApp). */
+private const val CONTACT_PHONE_WHATSAPP_TELEGRAM = "9182351381"
 
 private data class SupportContactsUi(
     val whatsappNumber: String?,
@@ -1528,37 +1536,63 @@ private fun JSONObject.optTrimmedUrlOrNull(vararg keys: String): String? {
     return null
 }
 
+private fun parseSupportContactsResponseBody(text: String): SupportContactsUi? {
+    if (text.isBlank()) return null
+    val root = JSONObject(text)
+    val j = root.optJSONObject("data") ?: root.optJSONObject("contacts") ?: root
+    val wa =
+        j.optString("whatsapp_number", "")
+            .ifBlank { j.optString("whatsapp", "") }
+            .ifBlank { j.optString("support_whatsapp", "") }
+            .ifBlank { j.optString("whatsapp_mobile", "") }
+            .trim()
+            .ifBlank { null }
+    val tg = j.optString("telegram", "").trim().ifBlank { null }
+    return SupportContactsUi(
+        whatsappNumber = wa,
+        telegram = tg,
+        facebookUrl = j.optTrimmedUrlOrNull("facebook", "facebook_url"),
+        instagramUrl = j.optTrimmedUrlOrNull("instagram", "instagram_url"),
+        youtubeUrl = j.optTrimmedUrlOrNull("youtube", "youtube_url")
+    )
+}
+
 private suspend fun fetchSupportContacts(): SupportContactsUi? =
     withContext(Dispatchers.IO) {
         try {
-            val token = AuthTokenStore.accessToken
-            val reqBuilder =
-                Request.Builder()
-                    .url(SUPPORT_CONTACTS_API_URL)
-                    .header("Accept", "application/json")
-            if (!token.isNullOrBlank()) {
-                reqBuilder.header("Authorization", "Bearer $token")
+            // /api/support/contacts/ is a public endpoint — no auth needed.
+            // Try without token first; fall back to with-token if 401.
+            val token =
+                AuthTokenStore.accessToken?.takeUnless { AuthTokenStore.isLocalDemoSession() }
+
+            fun buildContactsRequest(includeBearer: Boolean): Request {
+                val b =
+                    Request.Builder()
+                        .url(SUPPORT_CONTACTS_API_URL)
+                        .header("Accept", "application/json")
+                if (includeBearer && !token.isNullOrBlank()) {
+                    b.header("Authorization", "Bearer $token")
+                }
+                return b.get().build()
             }
-            val req = reqBuilder.get().build()
-            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+
+            // First attempt: no auth (works for public endpoint)
+            cricketOddsHttpClient.newCall(buildContactsRequest(false)).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful || text.isBlank()) return@withContext null
-                val root = JSONObject(text)
-                val j = root.optJSONObject("data") ?: root
-                val wa =
-                    j.optString("whatsapp_number", "")
-                        .ifBlank { j.optString("whatsapp", "") }
-                        .trim()
-                        .ifBlank { null }
-                val tg = j.optString("telegram", "").trim().ifBlank { null }
-                SupportContactsUi(
-                    whatsappNumber = wa,
-                    telegram = tg,
-                    facebookUrl = j.optTrimmedUrlOrNull("facebook", "facebook_url"),
-                    instagramUrl = j.optTrimmedUrlOrNull("instagram", "instagram_url"),
-                    youtubeUrl = j.optTrimmedUrlOrNull("youtube", "youtube_url")
-                )
+                if (resp.isSuccessful && text.isNotBlank()) {
+                    return@withContext parseSupportContactsResponseBody(text)
+                }
             }
+            // Second attempt: with Bearer token (in case server requires auth)
+            if (!token.isNullOrBlank()) {
+                cricketOddsHttpClient.newCall(buildContactsRequest(true)).execute().use { resp ->
+                    val text = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful && text.isNotBlank()) {
+                        return@withContext parseSupportContactsResponseBody(text)
+                    }
+                }
+            }
+            null
         } catch (_: Exception) {
             null
         }
@@ -2031,6 +2065,13 @@ fun MainScreen(onLogout: () -> Unit) {
 
     LaunchedEffect(Unit) {
         if (cachedSupportContacts == null) {
+            cachedSupportContacts = fetchSupportContacts()
+        }
+    }
+
+    /** Refresh support contacts when opening Profile so WhatsApp/Telegram use [SUPPORT_CONTACTS_API_URL], not stale null + fallback. */
+    LaunchedEffect(selectedTab, currentSubScreen) {
+        if (selectedTab == "profile" && currentSubScreen == "main") {
             cachedSupportContacts = fetchSupportContacts()
         }
     }
@@ -4574,35 +4615,81 @@ private data class WithdrawRecordApi(
     val updatedAt: String
 )
 
+/**
+ * Extracts the array of transaction rows from JSON envelopes.
+ * Handles: plain array, DRF `results`, `data`, `deposits`, `withdrawals`,
+ * and the split-by-status format {"successful":[…],"rejected":[…]} used by this API.
+ */
+private fun extractTransactionListArray(text: String): JSONArray {
+    val t = text.trim()
+    if (t.isEmpty()) return JSONArray()
+    return try {
+        // plain array
+        if (t.startsWith("[")) return JSONArray(t)
+
+        val root = JSONObject(t)
+
+        // flat top-level array keys
+        for (key in listOf("results", "data", "deposits", "withdrawals", "withdraws",
+                            "items", "records", "list")) {
+            root.optJSONArray(key)?.let { return it }
+        }
+
+        // nested under "data" object
+        root.optJSONObject("data")?.let { d ->
+            for (key in listOf("deposits", "withdrawals", "withdraws", "results",
+                                "items", "records", "list", "data")) {
+                d.optJSONArray(key)?.let { return it }
+            }
+        }
+
+        // nested under "payload" object
+        root.optJSONObject("payload")?.let { p ->
+            for (key in listOf("results", "data")) {
+                p.optJSONArray(key)?.let { return it }
+            }
+        }
+
+        // split-by-status envelope: {"successful":[…],"rejected":[…],"pending":[…],…}
+        val statusKeys = listOf(
+            "successful", "rejected", "pending", "approved",
+            "completed", "failed", "cancelled", "processing", "all"
+        )
+        val merged = JSONArray()
+        var found = false
+        for (key in statusKeys) {
+            val arr = root.optJSONArray(key) ?: continue
+            found = true
+            for (i in 0 until arr.length()) merged.put(arr.get(i))
+        }
+        if (found) return merged
+
+        JSONArray()
+    } catch (_: Exception) {
+        JSONArray()
+    }
+}
+
 private fun parseDepositsResponse(text: String): List<DepositRecordApi> {
     val t = text.trim()
     if (t.isEmpty()) return emptyList()
-    val arr: JSONArray =
-        when {
-            t.startsWith("[") -> JSONArray(t)
-            else -> {
-                val root = JSONObject(t)
-                root.optJSONArray("results")
-                    ?: root.optJSONArray("deposits")
-                    ?: root.optJSONArray("data")
-                    ?: root.optJSONObject("data")?.optJSONArray("deposits")
-                    ?: root.optJSONObject("data")?.optJSONArray("results")
-                    ?: root.optJSONObject("data")?.optJSONArray("data")
-                    ?: JSONArray()
-            }
+    return try {
+        val arr = extractTransactionListArray(t)
+        val out = ArrayList<DepositRecordApi>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out.add(parseDepositRecord(o))
         }
-    val out = ArrayList<DepositRecordApi>()
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        out.add(parseDepositRecord(o))
+        out
+    } catch (_: Exception) {
+        emptyList()
     }
-    return out
 }
 
 private fun parseDepositRecord(o: JSONObject): DepositRecordApi =
     DepositRecordApi(
         id = o.optIntValue("id", -1),
-        amount = o.optIntValue("amount", 0),
+        amount = o.optRupeeAmountInt("amount", 0),
         status = o.optString("status", "").trim(),
         screenshotUrl = o.pickString("screenshot_url", "screenshot", "proof_url")?.trim()?.takeIf { it.isNotBlank() },
         paymentMethod =
@@ -4619,28 +4706,17 @@ private fun parseDepositRecord(o: JSONObject): DepositRecordApi =
 private fun parseWithdrawalsResponse(text: String): List<WithdrawRecordApi> {
     val t = text.trim()
     if (t.isEmpty()) return emptyList()
-    val arr: JSONArray =
-        when {
-            t.startsWith("[") -> JSONArray(t)
-            else -> {
-                val root = JSONObject(t)
-                root.optJSONArray("results")
-                    ?: root.optJSONArray("withdraws")
-                    ?: root.optJSONArray("withdrawals")
-                    ?: root.optJSONArray("data")
-                    ?: root.optJSONObject("data")?.optJSONArray("withdraws")
-                    ?: root.optJSONObject("data")?.optJSONArray("withdrawals")
-                    ?: root.optJSONObject("data")?.optJSONArray("results")
-                    ?: root.optJSONObject("data")?.optJSONArray("data")
-                    ?: JSONArray()
-            }
+    return try {
+        val arr = extractTransactionListArray(t)
+        val out = ArrayList<WithdrawRecordApi>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out.add(parseWithdrawRecord(o))
         }
-    val out = ArrayList<WithdrawRecordApi>()
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        out.add(parseWithdrawRecord(o))
+        out
+    } catch (_: Exception) {
+        emptyList()
     }
-    return out
 }
 
 private fun parseWithdrawRecord(o: JSONObject): WithdrawRecordApi =
@@ -4661,7 +4737,10 @@ private suspend fun fetchMyWithdrawals(): Pair<List<WithdrawRecordApi>, String?>
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(emptyList(), "Sign in to view withdrawals.")
         if (AuthTokenStore.isLocalDemoSession()) {
-            return@withContext Pair(emptyList(), null)
+            return@withContext Pair(
+                emptyList(),
+                "Offline demo login cannot load withdrawal history. Sign in with your real account."
+            )
         }
         try {
             val req =
@@ -4691,7 +4770,10 @@ private suspend fun fetchMyDeposits(): Pair<List<DepositRecordApi>, String?> =
         val token = AuthTokenStore.accessToken
             ?: return@withContext Pair(emptyList(), "Sign in to view deposits.")
         if (AuthTokenStore.isLocalDemoSession()) {
-            return@withContext Pair(emptyList(), null)
+            return@withContext Pair(
+                emptyList(),
+                "Offline demo login cannot load deposit history. Sign in with your real account."
+            )
         }
         try {
             val req =
@@ -5116,7 +5198,10 @@ fun TransactionalRecordsScreen(onBack: () -> Unit) {
                                     )
                                 }
                             } else {
-                                items(filteredDeposits, key = { it.id }) { row ->
+                                items(
+                                    filteredDeposits,
+                                    key = { d -> "${d.id}_${d.createdAt}_${d.amount}" }
+                                ) { row ->
                                     DepositRecordRow(row)
                                 }
                             }
@@ -5171,7 +5256,10 @@ fun TransactionalRecordsScreen(onBack: () -> Unit) {
                                     )
                                 }
                             } else {
-                                items(filteredWithdrawals, key = { it.id }) { row ->
+                                items(
+                                    filteredWithdrawals,
+                                    key = { w -> "${w.id}_${w.createdAt}_${w.amount}" }
+                                ) { row ->
                                     WithdrawRecordRow(row)
                                 }
                             }
@@ -5192,6 +5280,7 @@ private fun ProfileScreen(
 ) {
     BackHandler { onBack() }
     val context = LocalContext.current
+    val profileScope = rememberCoroutineScope()
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
         // Top Bar
         Row(
@@ -5248,7 +5337,15 @@ private fun ProfileScreen(
                     "Whatsapp",
                     icon = Icons.Default.Chat,
                     iconColor = Color(0xFF4CAF50),
-                    onClick = { context.openWhatsAppToContact(supportContacts?.whatsappNumber) }
+                    onClick = {
+                        profileScope.launch {
+                            var phone = supportContacts?.whatsappNumber?.trim()?.takeIf { it.isNotBlank() }
+                            if (phone.isNullOrBlank()) {
+                                phone = fetchSupportContacts()?.whatsappNumber?.trim()?.takeIf { it.isNotBlank() }
+                            }
+                            context.openWhatsAppToContact(phone)
+                        }
+                    }
                 )
             }
             item {
@@ -5256,7 +5353,15 @@ private fun ProfileScreen(
                     "Telegram",
                     icon = Icons.Default.Send,
                     iconColor = Color(0xFF2196F3),
-                    onClick = { context.openTelegramToContact(supportContacts?.telegram) }
+                    onClick = {
+                        profileScope.launch {
+                            var tg = supportContacts?.telegram?.trim()?.takeIf { it.isNotBlank() }
+                            if (tg.isNullOrBlank()) {
+                                tg = fetchSupportContacts()?.telegram?.trim()?.takeIf { it.isNotBlank() }
+                            }
+                            context.openTelegramToContact(tg)
+                        }
+                    }
                 )
             }
             item {
