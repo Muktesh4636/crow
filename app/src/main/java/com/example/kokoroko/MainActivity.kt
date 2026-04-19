@@ -1,12 +1,17 @@
 package com.example.kokoroko
 
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.ContextWrapper
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -6214,6 +6219,46 @@ private val PaymentHeaderBlue = Color(0xFF3F51B5)
 private val PaymentAmountBlue = Color(0xFF1565C0)
 private val OrangePrimary = Color(0xFFFF6F00)
 
+/** Downloads [url] and saves the image into the device's Photos/Gallery. Returns true on success. */
+private suspend fun saveQrImageToGallery(context: Context, url: String): Boolean =
+    withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url(url).get().build()
+            val bytes = cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext false
+                resp.body?.bytes() ?: return@withContext false
+            }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: return@withContext false
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, "QR_${System.currentTimeMillis()}.png")
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Kokoroko")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+                ) ?: return@withContext false
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                context.contentResolver.update(uri, values, null, null)
+            } else {
+                @Suppress("DEPRECATION")
+                android.provider.MediaStore.Images.Media.insertImage(
+                    context.contentResolver, bitmap, "QR_${System.currentTimeMillis()}", "Kokoroko QR"
+                ) ?: return@withContext false
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
 @Composable
 private fun PaymentOptionsScreen(
     onBack: () -> Unit,
@@ -6237,6 +6282,7 @@ private fun PaymentOptionsScreen(
     var uploadSubmitting by remember { mutableStateOf(false) }
     var uploadError by remember { mutableStateOf<String?>(null) }
     val uploadScope = rememberCoroutineScope()
+    var savingQr by remember { mutableStateOf(false) }
 
     val screenshotLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -6334,12 +6380,33 @@ private fun PaymentOptionsScreen(
                     }
                     Spacer(Modifier.height(12.dp))
                     Button(
-                        onClick = { Toast.makeText(context, "QR saved to gallery", Toast.LENGTH_SHORT).show() },
+                        onClick = {
+                            if (!savingQr && qrImageUrl != null) {
+                                savingQr = true
+                                uploadScope.launch {
+                                    val ok = saveQrImageToGallery(context, qrImageUrl)
+                                    savingQr = false
+                                    val msg = if (ok) "QR saved to gallery" else "Failed to save QR"
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        enabled = !savingQr,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 80.dp).height(44.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
+                        if (savingQr) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Save to Gallery", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
                     }
                     Spacer(Modifier.height(20.dp))
                 }
