@@ -1292,7 +1292,8 @@ private data class CricketEventUi(
     val markets: List<CricketMarketUi>,
     val scores: List<CricketScoreUi> = emptyList(),
     val clockStatus: String = "",
-    val inningsLabel: String = ""
+    val inningsLabel: String = "",
+    val eventId: Long = 0L
 )
 
 private data class CricketBetSelection(
@@ -1425,6 +1426,7 @@ private fun parseLiveEventsFormat(obj: JSONObject): List<CricketEventUi> {
     val out = mutableListOf<CricketEventUi>()
     for (i in 0 until eventsArr.length()) {
         val e = eventsArr.optJSONObject(i) ?: continue
+        val eventId = e.optLong("event_id", 0L)
         val matchName = e.optString("match_name", "").ifBlank { "Cricket" }
         val innings = e.optString("current_innings", "")
         val clockStatus = e.optString("clock_status", "")
@@ -1462,7 +1464,8 @@ private fun parseLiveEventsFormat(obj: JSONObject): List<CricketEventUi> {
             markets = markets,
             scores = scores,
             clockStatus = clockStatus,
-            inningsLabel = innings
+            inningsLabel = innings,
+            eventId = eventId
         ))
     }
     return out
@@ -1574,6 +1577,102 @@ private suspend fun fetchCricketPreEvents(): List<CricketEventUi> = withContext(
             parseCricketFeedJson(body)
         }
     } catch (_: Exception) { emptyList() }
+}
+
+// ── Live odds detail ──────────────────────────────────────────────────────────
+
+private val CRICKET_LIVE_ODDS_API_URL = apiUrl("/api/cricket/live-odds/")
+
+private data class CricketOddsOutcomeUi(
+    val name: String,
+    val priceFormat: String,
+    val status: String
+)
+
+private data class CricketOddsMarketUi(
+    val marketId: Long,
+    val marketName: String,
+    val marketStatus: String,
+    val outcomes: List<CricketOddsOutcomeUi>
+)
+
+private data class CricketMatchOddsDetail(
+    val eventId: Long,
+    val matchName: String,
+    val currentInnings: String,
+    val clockStatus: String,
+    val scores: List<CricketScoreUi>,
+    val allMarkets: List<CricketOddsMarketUi>,
+    val pollIntervalSeconds: Int
+)
+
+private suspend fun fetchLiveOddsDetail(eventId: Long): Pair<CricketMatchOddsDetail?, String?> =
+    withContext(Dispatchers.IO) {
+        try {
+            val url = "$CRICKET_LIVE_ODDS_API_URL?event_id=$eventId"
+            val req = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || body.isBlank()) {
+                    return@withContext Pair(null, "Failed to load odds (${resp.code})")
+                }
+                Pair(parseLiveOddsDetail(body), null)
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+private fun parseLiveOddsDetail(json: String): CricketMatchOddsDetail? {
+    return try {
+        val o = JSONObject(json)
+        val scoresArr = o.optJSONArray("scores")
+        val scores = mutableListOf<CricketScoreUi>()
+        if (scoresArr != null) {
+            for (i in 0 until scoresArr.length()) {
+                val s = scoresArr.optJSONObject(i) ?: continue
+                scores.add(CricketScoreUi(s.optString("team"), s.optString("score", "0-0"), s.optBoolean("batting")))
+            }
+        }
+        val marketsArr = o.optJSONArray("all_markets")
+        val markets = mutableListOf<CricketOddsMarketUi>()
+        if (marketsArr != null) {
+            for (i in 0 until marketsArr.length()) {
+                val m = marketsArr.optJSONObject(i) ?: continue
+                val outcomesArr = m.optJSONArray("outcomes")
+                val outcomes = mutableListOf<CricketOddsOutcomeUi>()
+                if (outcomesArr != null) {
+                    for (j in 0 until outcomesArr.length()) {
+                        val oc = outcomesArr.optJSONObject(j) ?: continue
+                        outcomes.add(CricketOddsOutcomeUi(
+                            name = oc.optString("name"),
+                            priceFormat = oc.optString("price_format", "-"),
+                            status = oc.optString("status", "")
+                        ))
+                    }
+                }
+                markets.add(CricketOddsMarketUi(
+                    marketId = m.optLong("market_id"),
+                    marketName = m.optString("market_name"),
+                    marketStatus = m.optString("market_status", "open"),
+                    outcomes = outcomes
+                ))
+            }
+        }
+        CricketMatchOddsDetail(
+            eventId = o.optLong("event_id"),
+            matchName = o.optString("match_name"),
+            currentInnings = o.optString("current_innings", ""),
+            clockStatus = o.optString("clock_status", ""),
+            scores = scores,
+            allMarkets = markets,
+            pollIntervalSeconds = o.optInt("poll_interval_seconds", 10)
+        )
+    } catch (_: Exception) { null }
 }
 
 private fun formatOdd(item: JSONObject, vararg keys: String): String {
@@ -2474,9 +2573,224 @@ private fun CricketBetCardDialog(
 }
 
 @Composable
+private fun CricketMatchDetailScreen(
+    eventId: Long,
+    matchTitle: String,
+    onBack: () -> Unit
+) {
+    var detail by remember { mutableStateOf<CricketMatchOddsDetail?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var betSelection by remember { mutableStateOf<CricketBetSelection?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        scope.launch {
+            loading = true; error = null
+            val (d, err) = fetchLiveOddsDetail(eventId)
+            detail = d; error = err; loading = false
+            // auto-refresh according to poll_interval
+            val interval = ((d?.pollIntervalSeconds ?: 10) * 1000L).coerceIn(3000L, 30000L)
+            delay(interval)
+            if (detail != null) reload()
+        }
+    }
+
+    LaunchedEffect(eventId) { reload() }
+
+    BackHandler { if (betSelection != null) betSelection = null else onBack() }
+
+    betSelection?.let { sel ->
+        CricketBetCardDialog(selection = sel, onDismiss = { betSelection = null }, onPlaceBet = { betSelection = null })
+    }
+
+    Column(Modifier.fillMaxSize().background(Color(0xFFF8FAFC))) {
+        // Header
+        Surface(Modifier.fillMaxWidth(), color = Color.White) {
+            Column {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
+                    }
+                    Text(
+                        text = detail?.matchName ?: matchTitle,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = Color.Black,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        lineHeight = 20.sp
+                    )
+                    if (loading && detail != null) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp).padding(end = 8.dp),
+                            color = CricketOddsAccent,
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+                // score bar
+                detail?.let { d ->
+                    val statusColor = when (d.clockStatus.uppercase(Locale.US)) {
+                        "STARTED" -> Color(0xFF2E7D32); "PAUSED" -> Color(0xFFF57C00); else -> Color(0xFF546E7A)
+                    }
+                    val statusLabel = when (d.clockStatus.uppercase(Locale.US)) {
+                        "STARTED" -> "LIVE"; "PAUSED" -> "PAUSED"; "NOT_STARTED" -> "UPCOMING"; else -> d.clockStatus
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().background(Color(0xFFF5F5F5)).padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            if (d.currentInnings.isNotBlank()) {
+                                Text(d.currentInnings, fontSize = 11.sp, color = Color.Gray)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            d.scores.forEach { s ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (s.batting) Text("🏏 ", fontSize = 12.sp)
+                                        Text(
+                                            s.team,
+                                            fontSize = 13.sp,
+                                            fontWeight = if (s.batting) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = if (s.batting) Color(0xFF1A1A1A) else Color(0xFF757575)
+                                        )
+                                    }
+                                    Text(
+                                        s.score,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (s.batting) CricketOddsAccent else Color(0xFF757575)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = 0.12f)) {
+                            Text(
+                                statusLabel,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = statusColor
+                            )
+                        }
+                    }
+                }
+                Divider(color = Color(0xFFE0E0E0))
+            }
+        }
+
+        when {
+            loading && detail == null -> {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = CricketOddsAccent)
+                }
+            }
+            error != null && detail == null -> {
+                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(error!!, color = Color(0xFFC62828), fontSize = 14.sp, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = { reload() }) { Text("Retry", color = CricketOddsAccent) }
+                    }
+                }
+            }
+            else -> {
+                val markets = detail?.allMarkets ?: emptyList()
+                if (markets.isEmpty()) {
+                    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text("No markets available for this match.", fontSize = 15.sp, color = Color.DarkGray, textAlign = TextAlign.Center)
+                    }
+                } else {
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(count = markets.size, key = { markets[it].marketId }) { idx ->
+                            val market = markets[idx]
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.White,
+                                border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+                            ) {
+                                Column(Modifier.padding(14.dp)) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            market.marketName,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF1A1A1A),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (market.marketStatus == "open") {
+                                            Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFE8F5E9)) {
+                                                Text("OPEN", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        market.outcomes.forEach { outcome ->
+                                            Surface(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clickable {
+                                                        betSelection = CricketBetSelection(
+                                                            matchTitle = detail?.matchName ?: matchTitle,
+                                                            marketQuestion = market.marketName,
+                                                            selectionLabel = outcome.name,
+                                                            odd = outcome.priceFormat
+                                                        )
+                                                    },
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = CricketOddsAccent.copy(alpha = 0.07f),
+                                                border = BorderStroke(1.dp, CricketOddsAccent.copy(alpha = 0.25f))
+                                            ) {
+                                                Column(
+                                                    Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally
+                                                ) {
+                                                    Text(outcome.name, fontSize = 11.sp, color = Color(0xFF424242), maxLines = 2, textAlign = TextAlign.Center, lineHeight = 15.sp)
+                                                    Spacer(Modifier.height(4.dp))
+                                                    Text(outcome.priceFormat, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = CricketOddsAccent)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CricketMatchCard(
     event: CricketEventUi,
-    onOddClick: (CricketBetSelection) -> Unit
+    onOddClick: (CricketBetSelection) -> Unit,
+    onMatchClick: ((CricketEventUi) -> Unit)? = null
 ) {
     val statusColor = when (event.clockStatus.uppercase(Locale.US)) {
         "STARTED" -> Color(0xFF2E7D32)
@@ -2491,13 +2805,15 @@ private fun CricketMatchCard(
     }
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onMatchClick != null) Modifier.clickable { onMatchClick(event) } else Modifier),
         shape = RoundedCornerShape(14.dp),
         color = Color.White,
         border = BorderStroke(1.dp, Color(0xFFE0E0E0))
     ) {
         Column(Modifier.padding(16.dp)) {
-            // Title row + status badge
+            // Title row + status badge + "View Odds" chevron
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top,
@@ -2521,6 +2837,14 @@ private fun CricketMatchCard(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = statusColor
+                    )
+                }
+                if (onMatchClick != null) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "View odds",
+                        tint = Color(0xFFBDBDBD),
+                        modifier = Modifier.size(20.dp).padding(start = 4.dp)
                     )
                 }
             }
@@ -2844,6 +3168,17 @@ private fun CricketLiveStreamTopBar(modifier: Modifier = Modifier) {
 fun CricketOddsScreen(onBack: () -> Unit) {
     var betSelection by remember { mutableStateOf<CricketBetSelection?>(null) }
     var selectedCricketTab by remember { mutableStateOf(0) } // 0 = Live, 1 = Pre Events
+    var selectedEvent by remember { mutableStateOf<CricketEventUi?>(null) }
+
+    // Show detail screen when a match is tapped
+    selectedEvent?.let { event ->
+        CricketMatchDetailScreen(
+            eventId = event.eventId,
+            matchTitle = event.matchTitle,
+            onBack = { selectedEvent = null }
+        )
+        return
+    }
 
     // Live events state
     val cachedFirst = remember { CricketFeedStore.peek().orEmpty() }
@@ -2970,7 +3305,8 @@ fun CricketOddsScreen(onBack: () -> Unit) {
                 items(count = events.size, key = { it }) { eIdx ->
                     CricketMatchCard(
                         event = events[eIdx],
-                        onOddClick = { betSelection = it }
+                        onOddClick = { betSelection = it },
+                        onMatchClick = if (selectedCricketTab == 0) ({ selectedEvent = it }) else null
                     )
                 }
             }
