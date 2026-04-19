@@ -6371,12 +6371,14 @@ private fun PaymentOptionsScreen(
                 item {
                     Text("Scan QR To Pay", modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black, textAlign = TextAlign.Center)
                     Spacer(Modifier.height(12.dp))
-                    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 2.dp) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context).data(qrImageUrl).crossfade(true).build(),
-                            contentDescription = "QR Code",
-                            modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(16.dp)
-                        )
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Surface(modifier = Modifier.size(200.dp), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 2.dp) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context).data(qrImageUrl).crossfade(true).build(),
+                                contentDescription = "QR Code",
+                                modifier = Modifier.fillMaxSize().padding(12.dp)
+                            )
+                        }
                     }
                     Spacer(Modifier.height(12.dp))
                     Button(
