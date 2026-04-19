@@ -101,6 +101,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.math.BigDecimal
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -309,14 +310,14 @@ private data class BankDetailsUi(
     val branch: String = ""
 )
 
-/** Parsed from [AUTH_WALLET_URL] — balances, bank, UPI/QR, and optional payment method rows */
+/** Parsed from GET [AUTH_WALLET_URL]: id, balance, unavailable_balance, withdrawable_balance (+ optional payment_methods, bank/UPI fields). */
 private data class WalletApiResult(
     val bank: BankDetailsUi?,
     val upiId: String?,
     val qrImageUrl: String?,
     val paymentMethods: List<WalletPaymentMethodItem>?,
     val walletId: Int? = null,
-    /** Total balance (string or number from API, e.g. "1500.50") */
+    /** Total balance (decimal string or JSON number from API). */
     val balance: String? = null,
     val unavailableBalance: String? = null,
     val withdrawableBalance: String? = null
@@ -374,6 +375,32 @@ private fun JSONObject.optIntValue(key: String, default: Int = 0): Int {
         is Number -> v.toInt()
         is String -> v.toIntOrNull() ?: default
         else -> default
+    }
+}
+
+/** Parses list withdrawal amounts: int/long/double in JSON or decimal strings like "500.00". */
+private fun JSONObject.optRupeeWithdrawAmount(key: String): String {
+    if (!has(key) || isNull(key)) return "0"
+    return when (val v = opt(key)) {
+        is String -> {
+            val s = v.trim().replace(",", "").replace(" ", "")
+            if (s.isBlank()) return "0"
+            runCatching { BigDecimal(s).stripTrailingZeros().toPlainString() }.getOrElse { s }
+        }
+        is Int -> v.toString()
+        is Long -> v.toString()
+        is Double -> BigDecimal.valueOf(v).stripTrailingZeros().toPlainString()
+        is Float -> BigDecimal.valueOf(v.toDouble()).stripTrailingZeros().toPlainString()
+        is Number -> {
+            val d = v.toDouble()
+            val l = v.toLong()
+            if (!d.isNaN() && d == l.toDouble()) {
+                l.toString()
+            } else {
+                BigDecimal.valueOf(d).stripTrailingZeros().toPlainString()
+            }
+        }
+        else -> "0"
     }
 }
 
@@ -532,7 +559,8 @@ private fun parseWalletApiResultLegacy(root: JSONObject): WalletApiResult {
             isPaymentDetailsMethodArray(arr) -> null
             else -> parsePaymentMethodsArray(arr)
         }
-    val walletId = if (data.has("id")) data.optInt("id") else null
+    val walletId =
+        if (data.has("id") && !data.isNull("id")) data.optIntValue("id") else null
     val balance = data.optAmountString("balance", "available_balance", "total_balance")
     val unavailable = data.optAmountString("unavailable_balance", "locked_balance", "pending_balance")
     val withdrawable = data.optAmountString("withdrawable_balance", "available_withdrawal")
@@ -737,7 +765,7 @@ private suspend fun postAuthLogin(context: Context, phone: String, password: Str
         }
     }
 
-/** Matches GET/POST [AUTH_PROFILE_URL] — gender is MALE | FEMALE | OTHER | null. */
+/** Matches GET [AUTH_PROFILE_URL] payload: id, username, email, phone_number, gender, is_staff. */
 private data class ProfileDetailsApi(
     val id: Int,
     val username: String,
@@ -775,7 +803,7 @@ private fun profileGenderUiToApi(ui: String?): String? =
 
 private fun parseProfileFromJson(root: JSONObject): ProfileDetailsApi {
     val data = root.optJSONObject("data") ?: root.optJSONObject("profile") ?: root.optJSONObject("user") ?: root
-    val id = data.optInt("id", 0)
+    val id = data.optIntValue("id", 0)
     val username =
         data.pickString("username", "name", "full_name", "display_name").orEmpty().trim()
     val phone = data.pickString("phone_number", "phone", "mobile", "contact_number").orEmpty().trim()
@@ -926,18 +954,34 @@ private data class AuthBankDetailsApi(
     val accountNumber: String,
     val ifscCode: String,
     val upiId: String,
-    val isDefault: Boolean
+    val isDefault: Boolean,
+    /** From `bank_accounts[]` — default-first order when present */
+    val allBanks: List<BankDetailsUi> = emptyList(),
+    /** From `upi_accounts[].upi_id` — default-first order when present */
+    val allUpiIds: List<String> = emptyList()
 ) {
     fun toBankDetailsUi(): BankDetailsUi =
         BankDetailsUi(accountName, bankName, accountNumber, ifscCode, "")
 
     fun toBankDetailsUiOrNull(): BankDetailsUi? {
+        if (allBanks.isNotEmpty()) return allBanks.first()
         val b = toBankDetailsUi()
         if (b.accountHolder.isBlank() && b.bankName.isBlank() && b.accountNumber.isBlank() && b.ifsc.isBlank()) {
             return null
         }
         return b
     }
+}
+
+private fun bankRowFromBankDetailsJson(o: JSONObject): Pair<BankDetailsUi, Boolean> {
+    val b = BankDetailsUi(
+        accountHolder = o.optString("account_name", "").trim(),
+        bankName = o.optString("bank_name", "").trim(),
+        accountNumber = o.optString("account_number", "").trim(),
+        ifsc = o.optString("ifsc_code", "").trim(),
+        branch = ""
+    )
+    return b to o.optBoolean("is_default", false)
 }
 
 private data class WithdrawInitiateResult(
@@ -951,29 +995,68 @@ private data class WithdrawInitiateResult(
 private fun parseAuthBankDetailsBody(body: String): AuthBankDetailsApi? {
     val t = body.trim()
     if (t.isEmpty()) return null
-    val root: JSONObject =
+    if (t.startsWith("[")) {
+        val arr = JSONArray(t)
+        if (arr.length() == 0) return null
+        return parseAuthBankDetailsBody(arr.getJSONObject(0).toString())
+    }
+    val j = JSONObject(t)
+    val payload =
         when {
-            t.startsWith("[") -> {
-                val arr = JSONArray(t)
-                if (arr.length() == 0) return null
-                arr.getJSONObject(0)
-            }
-            else -> {
-                val j = JSONObject(t)
-                when {
-                    j.has("data") && j.optJSONObject("data") != null -> j.getJSONObject("data")
-                    (j.optJSONArray("results")?.length() ?: 0) > 0 -> j.getJSONArray("results").getJSONObject(0)
-                    else -> j
-                }
+            j.has("data") && j.optJSONObject("data") != null -> j.getJSONObject("data")
+            (j.optJSONArray("results")?.length() ?: 0) > 0 -> j.getJSONArray("results").getJSONObject(0)
+            else -> j
+        }
+
+    // New shape: bank_accounts[] + upi_accounts[]
+    if (payload.has("bank_accounts") || payload.has("upi_accounts")) {
+        val banksArr = payload.optJSONArray("bank_accounts") ?: JSONArray()
+        val bankPairs = ArrayList<Pair<BankDetailsUi, Boolean>>()
+        for (i in 0 until banksArr.length()) {
+            val o = banksArr.optJSONObject(i) ?: continue
+            val (bk, def) = bankRowFromBankDetailsJson(o)
+            if (bk.accountHolder.isNotBlank() || bk.bankName.isNotBlank() || bk.accountNumber.isNotBlank() || bk.ifsc.isNotBlank()) {
+                bankPairs.add(bk to def)
             }
         }
+        val sortedBanks = bankPairs.sortedByDescending { it.second }.map { it.first }
+
+        val upiArr = payload.optJSONArray("upi_accounts") ?: JSONArray()
+        val upiPairs = ArrayList<Pair<String, Boolean>>()
+        for (i in 0 until upiArr.length()) {
+            val o = upiArr.optJSONObject(i) ?: continue
+            val vpa = o.optString("upi_id", "").trim()
+            if (vpa.isNotBlank()) upiPairs.add(vpa to o.optBoolean("is_default", false))
+        }
+        val sortedUpis = upiPairs.sortedByDescending { it.second }.map { it.first }
+
+        val pb = sortedBanks.firstOrNull()
+        val pu = sortedUpis.firstOrNull().orEmpty()
+
+        if (sortedBanks.isEmpty() && sortedUpis.isEmpty()) return null
+
+        return AuthBankDetailsApi(
+            accountName = pb?.accountHolder.orEmpty(),
+            bankName = pb?.bankName.orEmpty(),
+            accountNumber = pb?.accountNumber.orEmpty(),
+            ifscCode = pb?.ifsc.orEmpty(),
+            upiId = pu,
+            isDefault = true,
+            allBanks = sortedBanks,
+            allUpiIds = sortedUpis
+        )
+    }
+
+    val root = payload
     return AuthBankDetailsApi(
         accountName = root.optString("account_name", "").trim(),
         bankName = root.optString("bank_name", "").trim(),
         accountNumber = root.optString("account_number", "").trim(),
         ifscCode = root.optString("ifsc_code", "").trim(),
         upiId = root.optString("upi_id", "").trim(),
-        isDefault = root.optBoolean("is_default", false)
+        isDefault = root.optBoolean("is_default", false),
+        allBanks = emptyList(),
+        allUpiIds = emptyList()
     )
 }
 
@@ -1518,6 +1601,23 @@ private fun Context.openTelegramToContact(apiPhone: String? = null) {
     if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
         if (!tryOpenExternalUrl(raw)) {
             Toast.makeText(this, "Unable to open Telegram link", Toast.LENGTH_SHORT).show()
+        }
+        return
+    }
+    // "/api/support/contacts/" may return "@username" or bare username → https://t.me/username
+    if (raw.startsWith("@")) {
+        val h = raw.removePrefix("@").trim()
+        if (h.isNotBlank()) {
+            if (!tryOpenExternalUrl("https://t.me/$h")) {
+                Toast.makeText(this, "Unable to open Telegram", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+    }
+    val bare = raw.trim()
+    if (bare.matches(Regex("^[A-Za-z][A-Za-z0-9_]{3,31}$"))) {
+        if (!tryOpenExternalUrl("https://t.me/$bare")) {
+            Toast.makeText(this, "Unable to open Telegram", Toast.LENGTH_SHORT).show()
         }
         return
     }
@@ -4463,7 +4563,8 @@ private data class DepositRecordApi(
 
 private data class WithdrawRecordApi(
     val id: Int,
-    val amount: Int,
+    /** Normalized for display after ₹ (handles API string decimals e.g. "500.00"). */
+    val amount: String,
     val status: String,
     val withdrawalMethod: String,
     val withdrawalDetails: String,
@@ -4482,8 +4583,11 @@ private fun parseDepositsResponse(text: String): List<DepositRecordApi> {
             else -> {
                 val root = JSONObject(t)
                 root.optJSONArray("results")
-                    ?: root.optJSONArray("data")
                     ?: root.optJSONArray("deposits")
+                    ?: root.optJSONArray("data")
+                    ?: root.optJSONObject("data")?.optJSONArray("deposits")
+                    ?: root.optJSONObject("data")?.optJSONArray("results")
+                    ?: root.optJSONObject("data")?.optJSONArray("data")
                     ?: JSONArray()
             }
         }
@@ -4521,9 +4625,13 @@ private fun parseWithdrawalsResponse(text: String): List<WithdrawRecordApi> {
             else -> {
                 val root = JSONObject(t)
                 root.optJSONArray("results")
-                    ?: root.optJSONArray("data")
                     ?: root.optJSONArray("withdraws")
                     ?: root.optJSONArray("withdrawals")
+                    ?: root.optJSONArray("data")
+                    ?: root.optJSONObject("data")?.optJSONArray("withdraws")
+                    ?: root.optJSONObject("data")?.optJSONArray("withdrawals")
+                    ?: root.optJSONObject("data")?.optJSONArray("results")
+                    ?: root.optJSONObject("data")?.optJSONArray("data")
                     ?: JSONArray()
             }
         }
@@ -4538,7 +4646,7 @@ private fun parseWithdrawalsResponse(text: String): List<WithdrawRecordApi> {
 private fun parseWithdrawRecord(o: JSONObject): WithdrawRecordApi =
     WithdrawRecordApi(
         id = o.optIntValue("id", -1),
-        amount = o.optIntValue("amount", 0),
+        amount = o.optRupeeWithdrawAmount("amount"),
         status = o.optString("status", "").trim(),
         withdrawalMethod = o.optString("withdrawal_method", "").trim(),
         withdrawalDetails = o.optString("withdrawal_details", "").trim(),
@@ -4702,6 +4810,22 @@ private fun DepositRecordRow(record: DepositRecordApi) {
                     fontSize = 12.sp,
                     color = Color.Gray,
                     modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            record.screenshotUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "View payment screenshot",
+                    fontSize = 13.sp,
+                    color = OrangePrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clickable {
+                            if (!context.tryOpenExternalUrl(url)) {
+                                Toast.makeText(context, "Could not open link", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .padding(top = 2.dp)
                 )
             }
             record.adminNote?.let { note ->
@@ -5761,6 +5885,18 @@ private fun WithdrawalDestinationCard(
 ) {
     val bank = mergedWithdrawBankFromSaved(savedBankDetails, localBank)
     val upi = mergedWithdrawUpiFromSaved(savedBankDetails, localUpi)
+    val bankRows =
+        when {
+            !savedBankDetails?.allBanks.isNullOrEmpty() -> savedBankDetails!!.allBanks
+            bank != null -> listOf(bank)
+            else -> emptyList()
+        }
+    val upiRows =
+        when {
+            !savedBankDetails?.allUpiIds.isNullOrEmpty() -> savedBankDetails!!.allUpiIds
+            upi != null -> listOf(upi)
+            else -> emptyList()
+        }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -5775,7 +5911,7 @@ private fun WithdrawalDestinationCard(
         Spacer(Modifier.height(8.dp))
         if (paymentMethod == "bank") {
             when {
-                detailsLoading && bank == null -> {
+                detailsLoading && bankRows.isEmpty() -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(22.dp),
@@ -5786,21 +5922,28 @@ private fun WithdrawalDestinationCard(
                         Text("Loading bank account…", fontSize = 13.sp, color = Color.Gray)
                     }
                 }
-                bank != null -> {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFFFF8F0),
-                        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
-                    ) {
-                        Column(Modifier.padding(14.dp)) {
-                            Text("Bank account", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = WalletInkWarm)
-                            Spacer(Modifier.height(6.dp))
-                            BankDetailLine("Account holder", bank.accountHolder)
-                            BankDetailLine("Bank name", bank.bankName)
-                            BankDetailLine("Account number", bank.accountNumber)
-                            BankDetailLine("IFSC", bank.ifsc)
-                            if (bank.branch.isNotBlank()) BankDetailLine("Branch", bank.branch)
+                bankRows.isNotEmpty() -> {
+                    bankRows.forEachIndexed { index, bk ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = if (index < bankRows.lastIndex) 10.dp else 0.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFFFF8F0),
+                            border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+                        ) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text(
+                                    if (bankRows.size > 1) "Bank account ${index + 1}" else "Bank account",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = WalletInkWarm
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                BankDetailLine("Account holder", bk.accountHolder)
+                                BankDetailLine("Bank name", bk.bankName)
+                                BankDetailLine("Account number", bk.accountNumber)
+                                BankDetailLine("IFSC", bk.ifsc)
+                                if (bk.branch.isNotBlank()) BankDetailLine("Branch", bk.branch)
+                            }
                         }
                     }
                     Row(
@@ -5833,7 +5976,7 @@ private fun WithdrawalDestinationCard(
             }
         } else {
             when {
-                detailsLoading && upi == null -> {
+                detailsLoading && upiRows.isEmpty() -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(22.dp),
@@ -5844,17 +5987,24 @@ private fun WithdrawalDestinationCard(
                         Text("Loading UPI…", fontSize = 13.sp, color = Color.Gray)
                     }
                 }
-                upi != null -> {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFFFF8F0),
-                        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
-                    ) {
-                        Column(Modifier.padding(14.dp)) {
-                            Text("UPI ID", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = WalletInkWarm)
-                            Spacer(Modifier.height(4.dp))
-                            Text(upi, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
+                upiRows.isNotEmpty() -> {
+                    upiRows.forEachIndexed { index, vpa ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = if (index < upiRows.lastIndex) 10.dp else 0.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFFFF8F0),
+                            border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+                        ) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text(
+                                    if (upiRows.size > 1) "UPI ID ${index + 1}" else "UPI ID",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = WalletInkWarm
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(vpa, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
+                            }
                         }
                     }
                     Row(
@@ -6503,15 +6653,16 @@ fun TopHeader(
                     .fillMaxWidth()
                     .fillMaxHeight()
             ) {
+                // Same launcher artwork as login page ([R.mipmap.ic_launcher])
                 Box(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(CircleShape)
-                        .border(1.dp, Color(0xFFE0E0E0), CircleShape)
+                        .border(2.dp, Color.Black, CircleShape)
                 ) {
                     DrawableImage(
-                        R.drawable.gamelogo,
-                        contentDescription = null,
+                        R.mipmap.ic_launcher,
+                        contentDescription = "Hen Fight",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
                         alignment = Alignment.Center
