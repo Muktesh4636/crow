@@ -1371,6 +1371,7 @@ private fun parseMatchObject(item: JSONObject): CricketEventUi {
     val op = formatOdd(item, "oddPink", "odds2", "odd2", "price2")
     val teamBlue = if (tb.isNotBlank()) tb else "Team A"
     val teamPink = if (tp.isNotBlank()) tp else "Team B"
+    val eventId = item.optLong("event_id", item.optLong("id", item.optLong("eventId", 0L)))
     return CricketEventUi(
         matchTitle = league,
         leagueLabel = "",
@@ -1382,7 +1383,8 @@ private fun parseMatchObject(item: JSONObject): CricketEventUi {
                     CricketOutcomeUi(teamPink, op)
                 )
             )
-        )
+        ),
+        eventId = eventId
     )
 }
 
@@ -1390,6 +1392,7 @@ private fun parseMatchObject(item: JSONObject): CricketEventUi {
 private fun parseGunduataEventToUi(data: JSONObject): CricketEventUi {
     val matchTitle = data.optString("description", "").ifBlank { "Cricket" }
     val leagueLabel = leagueFromEventPaths(data.optJSONArray("eventPaths"))
+    val eventId = data.optLong("event_id", data.optLong("id", data.optLong("eventId", 0L)))
     val marketsArr = data.optJSONArray("markets") ?: JSONArray()
     val markets = mutableListOf<CricketMarketUi>()
     for (i in 0 until marketsArr.length()) {
@@ -1411,7 +1414,7 @@ private fun parseGunduataEventToUi(data: JSONObject): CricketEventUi {
             markets.add(CricketMarketUi(question = marketQuestionText(m), outcomes = outs))
         }
     }
-    return CricketEventUi(matchTitle = matchTitle, leagueLabel = leagueLabel, markets = markets)
+    return CricketEventUi(matchTitle = matchTitle, leagueLabel = leagueLabel, markets = markets, eventId = eventId)
 }
 
 private fun parseEventDataObject(o: JSONObject): CricketEventUi? {
@@ -1582,6 +1585,7 @@ private suspend fun fetchCricketPreEvents(): List<CricketEventUi> = withContext(
 // ── Live odds detail ──────────────────────────────────────────────────────────
 
 private val CRICKET_LIVE_ODDS_API_URL = apiUrl("/api/cricket/live-odds/")
+private val CRICKET_PREEVENT_ODDS_API_URL = apiUrl("/api/cricket/preevent-odds/")
 
 private data class CricketOddsOutcomeUi(
     val name: String,
@@ -1619,6 +1623,27 @@ private suspend fun fetchLiveOddsDetail(eventId: Long): Pair<CricketMatchOddsDet
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful || body.isBlank()) {
                     return@withContext Pair(null, "Failed to load odds (${resp.code})")
+                }
+                Pair(parseLiveOddsDetail(body), null)
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+private suspend fun fetchPreEventOddsDetail(eventId: Long): Pair<CricketMatchOddsDetail?, String?> =
+    withContext(Dispatchers.IO) {
+        try {
+            val url = "$CRICKET_PREEVENT_ODDS_API_URL?event_id=$eventId"
+            val req = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || body.isBlank()) {
+                    return@withContext Pair(null, "Failed to load pre-event odds (${resp.code})")
                 }
                 Pair(parseLiveOddsDetail(body), null)
             }
@@ -2576,7 +2601,8 @@ private fun CricketBetCardDialog(
 private fun CricketMatchDetailScreen(
     eventId: Long,
     matchTitle: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    isPreEvent: Boolean = false
 ) {
     var detail by remember { mutableStateOf<CricketMatchOddsDetail?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -2587,10 +2613,14 @@ private fun CricketMatchDetailScreen(
     fun reload() {
         scope.launch {
             loading = true; error = null
-            val (d, err) = fetchLiveOddsDetail(eventId)
+            val (d, err) = if (isPreEvent)
+                fetchPreEventOddsDetail(eventId)
+            else
+                fetchLiveOddsDetail(eventId)
             detail = d; error = err; loading = false
-            // auto-refresh according to poll_interval
-            val interval = ((d?.pollIntervalSeconds ?: 10) * 1000L).coerceIn(3000L, 30000L)
+            // auto-refresh according to poll_interval (pre-events refresh less aggressively)
+            val interval = if (isPreEvent) 30000L
+            else ((d?.pollIntervalSeconds ?: 10) * 1000L).coerceIn(3000L, 30000L)
             delay(interval)
             if (detail != null) reload()
         }
@@ -3169,13 +3199,15 @@ fun CricketOddsScreen(onBack: () -> Unit) {
     var betSelection by remember { mutableStateOf<CricketBetSelection?>(null) }
     var selectedCricketTab by remember { mutableStateOf(0) } // 0 = Live, 1 = Pre Events
     var selectedEvent by remember { mutableStateOf<CricketEventUi?>(null) }
+    var selectedEventIsPreEvent by remember { mutableStateOf(false) }
 
     // Show detail screen when a match is tapped
     selectedEvent?.let { event ->
         CricketMatchDetailScreen(
             eventId = event.eventId,
             matchTitle = event.matchTitle,
-            onBack = { selectedEvent = null }
+            onBack = { selectedEvent = null },
+            isPreEvent = selectedEventIsPreEvent
         )
         return
     }
@@ -3306,7 +3338,13 @@ fun CricketOddsScreen(onBack: () -> Unit) {
                     CricketMatchCard(
                         event = events[eIdx],
                         onOddClick = { betSelection = it },
-                        onMatchClick = if (selectedCricketTab == 0) ({ selectedEvent = it }) else null
+                        onMatchClick = if (selectedCricketTab == 0) ({
+                            selectedEventIsPreEvent = false
+                            selectedEvent = it
+                        }) else ({
+                            selectedEventIsPreEvent = true
+                            selectedEvent = it
+                        })
                     )
                 }
             }
