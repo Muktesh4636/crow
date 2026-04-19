@@ -1232,16 +1232,12 @@ private suspend fun postDepositUploadProof(
 }
 
 /** IPL / cricket screen: light blue & pink panels; accent for badges & buttons. */
-private val CricketOddsAccent   = Color(0xFF00C853)   // vivid green
-private val CricketOddsGold     = Color(0xFFFFD600)   // gold / yellow
-private val CricketOddsBlue     = Color(0xFF1B5E20)   // deep forest green (team A side)
-private val CricketOddsPink     = Color(0xFF004D40)   // teal-green (team B side)
-private val CricketOddsOnBlue   = Color(0xFFE8F5E9)   // light text on dark green
-private val CricketOddsOnPink   = Color(0xFFE0F2F1)   // light text on teal
-private val CricketOddsDarkBg   = Color(0xFF0A1F0A)   // near-black header bg
-private val CricketOddsCardBg   = Color(0xFF0D2818)   // card background (dark green)
-private val CricketOddsSubtext  = Color(0xFF81C784)   // muted green subtext
-private val CricketStreamLiveRed = Color(0xFFFF1744)  // live red
+private val CricketOddsAccent = Color(0xFF42A5F5)
+private val CricketOddsBlue = Color(0xFF90CAF9)
+private val CricketOddsPink = Color(0xFFF48FB1)
+private val CricketOddsOnBlue = Color(0xFF0D47A1)
+private val CricketOddsOnPink = Color(0xFF880E4F)
+private val CricketStreamLiveRed = Color(0xFFE53935)
 
 private enum class CricketOddsFilterTab {
     All,
@@ -2716,28 +2712,22 @@ private fun CricketMatchDetailScreen(
         CricketBetCardDialog(selection = sel, onDismiss = { betSelection = null }, onPlaceBet = { betSelection = null })
     }
 
-    Column(Modifier.fillMaxSize().background(CricketOddsDarkBg)) {
+    Column(Modifier.fillMaxSize().background(Color(0xFFF8FAFC))) {
         // Header
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(listOf(Color(0xFF1B5E20), Color(0xFF0A3D0A)))
-                )
-        ) {
+        Surface(Modifier.fillMaxWidth(), color = Color.White) {
             Column {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
                     }
                     Text(
                         text = detail?.matchName ?: matchTitle,
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
-                        color = Color.White,
+                        color = Color.Black,
                         modifier = Modifier.weight(1f),
                         maxLines = 2,
                         lineHeight = 20.sp
@@ -2753,19 +2743,19 @@ private fun CricketMatchDetailScreen(
                 // score bar
                 detail?.let { d ->
                     val statusColor = when (d.clockStatus.uppercase(Locale.US)) {
-                        "STARTED" -> CricketOddsAccent; "PAUSED" -> Color(0xFFF57C00); else -> CricketOddsSubtext
+                        "STARTED" -> Color(0xFF2E7D32); "PAUSED" -> Color(0xFFF57C00); else -> Color(0xFF546E7A)
                     }
                     val statusLabel = when (d.clockStatus.uppercase(Locale.US)) {
                         "STARTED" -> "LIVE"; "PAUSED" -> "PAUSED"; "NOT_STARTED" -> "UPCOMING"; else -> d.clockStatus
                     }
                     Row(
-                        Modifier.fillMaxWidth().background(Color(0xFF0A3D0A).copy(alpha = 0.7f)).padding(horizontal = 16.dp, vertical = 8.dp),
+                        Modifier.fillMaxWidth().background(Color(0xFFF5F5F5)).padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(Modifier.weight(1f)) {
                             if (d.currentInnings.isNotBlank()) {
-                                Text(d.currentInnings, fontSize = 11.sp, color = CricketOddsSubtext)
+                                Text(d.currentInnings, fontSize = 11.sp, color = Color.Gray)
                                 Spacer(Modifier.height(4.dp))
                             }
                             d.scores.forEach { s ->
@@ -2780,20 +2770,20 @@ private fun CricketMatchDetailScreen(
                                             s.team,
                                             fontSize = 13.sp,
                                             fontWeight = if (s.batting) FontWeight.SemiBold else FontWeight.Normal,
-                                            color = if (s.batting) Color.White else CricketOddsSubtext
+                                            color = if (s.batting) Color(0xFF1A1A1A) else Color(0xFF757575)
                                         )
                                     }
                                     Text(
                                         s.score,
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (s.batting) CricketOddsAccent else CricketOddsSubtext
+                                        color = if (s.batting) CricketOddsAccent else Color(0xFF757575)
                                     )
                                 }
                             }
                         }
                         Spacer(Modifier.width(12.dp))
-                        Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = 0.20f)) {
+                        Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = 0.12f)) {
                             Text(
                                 statusLabel,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -2817,7 +2807,7 @@ private fun CricketMatchDetailScreen(
             error != null && detail == null -> {
                 Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(error!!, color = Color(0xFFEF9A9A), fontSize = 14.sp, textAlign = TextAlign.Center)
+                        Text(error!!, color = Color(0xFFC62828), fontSize = 14.sp, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(12.dp))
                         TextButton(onClick = { reload() }) { Text("Retry", color = CricketOddsAccent) }
                     }
@@ -2827,7 +2817,7 @@ private fun CricketMatchDetailScreen(
                 val markets = detail?.allMarkets ?: emptyList()
                 if (markets.isEmpty()) {
                     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                        Text("No markets available for this match.", fontSize = 15.sp, color = CricketOddsSubtext, textAlign = TextAlign.Center)
+                        Text("No markets available for this match.", fontSize = 15.sp, color = Color.DarkGray, textAlign = TextAlign.Center)
                     }
                 } else {
                     LazyColumn(
@@ -2839,15 +2829,11 @@ private fun CricketMatchDetailScreen(
                             val market = markets[idx]
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(16.dp),
-                                color = CricketOddsCardBg,
-                                border = BorderStroke(1.dp, Color(0xFF1B5E20))
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.White,
+                                border = BorderStroke(1.dp, Color(0xFFE0E0E0))
                             ) {
-                                Column(
-                                    Modifier
-                                        .background(Brush.verticalGradient(listOf(Color(0xFF0D2818), Color(0xFF0A1F0A))))
-                                        .padding(14.dp)
-                                ) {
+                                Column(Modifier.padding(14.dp)) {
                                     Row(
                                         Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
@@ -2857,12 +2843,12 @@ private fun CricketMatchDetailScreen(
                                             market.marketName,
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.SemiBold,
-                                            color = Color.White,
+                                            color = Color(0xFF1A1A1A),
                                             modifier = Modifier.weight(1f)
                                         )
                                         if (market.marketStatus == "open") {
-                                            Surface(shape = RoundedCornerShape(4.dp), color = CricketOddsAccent.copy(alpha = 0.18f)) {
-                                                Text("OPEN", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = CricketOddsAccent)
+                                            Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFE8F5E9)) {
+                                                Text("OPEN", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
                                             }
                                         }
                                     }
@@ -2884,16 +2870,16 @@ private fun CricketMatchDetailScreen(
                                                         )
                                                     },
                                                 shape = RoundedCornerShape(8.dp),
-                                                color = Color(0xFF0D3320),
-                                                border = BorderStroke(1.dp, CricketOddsAccent.copy(alpha = 0.45f))
+                                                color = CricketOddsAccent.copy(alpha = 0.07f),
+                                                border = BorderStroke(1.dp, CricketOddsAccent.copy(alpha = 0.25f))
                                             ) {
                                                 Column(
                                                     Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
                                                     horizontalAlignment = Alignment.CenterHorizontally
                                                 ) {
-                                                    Text(outcome.name, fontSize = 11.sp, color = CricketOddsSubtext, maxLines = 2, textAlign = TextAlign.Center, lineHeight = 15.sp)
+                                                    Text(outcome.name, fontSize = 11.sp, color = Color(0xFF424242), maxLines = 2, textAlign = TextAlign.Center, lineHeight = 15.sp)
                                                     Spacer(Modifier.height(4.dp))
-                                                    Text(outcome.priceFormat, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = CricketOddsGold)
+                                                    Text(outcome.priceFormat, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = CricketOddsAccent)
                                                 }
                                             }
                                         }
@@ -2930,18 +2916,12 @@ private fun CricketMatchCard(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (onMatchClick != null) Modifier.clickable { onMatchClick(event) } else Modifier),
-        shape = RoundedCornerShape(16.dp),
-        color = CricketOddsCardBg,
-        border = BorderStroke(1.dp, Color(0xFF1B5E20))
+        shape = RoundedCornerShape(14.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, Color(0xFFE0E0E0))
     ) {
-        Column(
-            Modifier
-                .background(
-                    Brush.verticalGradient(listOf(Color(0xFF0D2818), Color(0xFF0A1F0A)))
-                )
-                .padding(16.dp)
-        ) {
-            // Title row + status badge + chevron
+        Column(Modifier.padding(16.dp)) {
+            // Title row + status badge + "View Odds" chevron
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top,
@@ -2951,13 +2931,13 @@ private fun CricketMatchCard(
                     text = event.matchTitle,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
-                    color = Color.White,
+                    color = Color(0xFF1A1A1A),
                     modifier = Modifier.weight(1f).padding(end = 8.dp),
                     lineHeight = 22.sp
                 )
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = statusColor.copy(alpha = 0.20f)
+                    color = statusColor.copy(alpha = 0.12f)
                 ) {
                     Text(
                         text = statusLabel,
@@ -2971,7 +2951,7 @@ private fun CricketMatchCard(
                     Icon(
                         imageVector = Icons.Default.ChevronRight,
                         contentDescription = "View odds",
-                        tint = CricketOddsSubtext,
+                        tint = Color(0xFFBDBDBD),
                         modifier = Modifier.size(20.dp).padding(start = 4.dp)
                     )
                 }
@@ -2982,14 +2962,14 @@ private fun CricketMatchCard(
                 Text(
                     text = event.inningsLabel,
                     fontSize = 12.sp,
-                    color = CricketOddsSubtext
+                    color = Color(0xFF757575)
                 )
             }
 
             // Score rows
             if (event.scores.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
-                Divider(color = Color(0xFF1B5E20), thickness = 1.dp)
+                Divider(color = Color(0xFFEEEEEE), thickness = 1.dp)
                 Spacer(Modifier.height(10.dp))
                 event.scores.forEach { s ->
                     Row(
@@ -3005,14 +2985,14 @@ private fun CricketMatchCard(
                                 text = s.team,
                                 fontSize = 14.sp,
                                 fontWeight = if (s.batting) FontWeight.SemiBold else FontWeight.Normal,
-                                color = if (s.batting) Color.White else CricketOddsSubtext
+                                color = if (s.batting) Color(0xFF1A1A1A) else Color(0xFF616161)
                             )
                         }
                         Text(
                             text = s.score,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (s.batting) CricketOddsAccent else CricketOddsSubtext
+                            color = if (s.batting) CricketOddsAccent else Color(0xFF616161)
                         )
                     }
                 }
@@ -3022,12 +3002,12 @@ private fun CricketMatchCard(
             val market = event.markets.firstOrNull()
             if (market != null && market.outcomes.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
-                Divider(color = Color(0xFF1B5E20), thickness = 1.dp)
+                Divider(color = Color(0xFFEEEEEE), thickness = 1.dp)
                 Spacer(Modifier.height(10.dp))
                 Text(
                     text = "Match Odds",
                     fontSize = 12.sp,
-                    color = CricketOddsSubtext,
+                    color = Color(0xFF9E9E9E),
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(Modifier.height(8.dp))
@@ -3048,8 +3028,8 @@ private fun CricketMatchCard(
                                     ))
                                 },
                             shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFF0D3320),
-                            border = BorderStroke(1.dp, CricketOddsAccent.copy(alpha = 0.5f))
+                            color = CricketOddsAccent.copy(alpha = 0.08f),
+                            border = BorderStroke(1.dp, CricketOddsAccent.copy(alpha = 0.3f))
                         ) {
                             Column(
                                 Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
@@ -3058,7 +3038,7 @@ private fun CricketMatchCard(
                                 Text(
                                     text = outcome.label,
                                     fontSize = 12.sp,
-                                    color = CricketOddsSubtext,
+                                    color = Color(0xFF424242),
                                     maxLines = 2,
                                     textAlign = TextAlign.Center,
                                     lineHeight = 16.sp
@@ -3068,7 +3048,7 @@ private fun CricketMatchCard(
                                     text = outcome.odd,
                                     fontSize = 17.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = CricketOddsGold
+                                    color = CricketOddsAccent
                                 )
                             }
                         }
@@ -3099,20 +3079,15 @@ private fun CricketMarketOddsCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = CricketOddsCardBg),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        border = BorderStroke(1.dp, Color(0xFF1B5E20))
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
-        Column(
-            Modifier
-                .background(Brush.verticalGradient(listOf(Color(0xFF0D2818), Color(0xFF0A1F0A))))
-                .padding(14.dp)
-        ) {
+        Column(Modifier.padding(14.dp)) {
             Text(
                 market.question,
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
-                color = Color.White,
+                color = Color.Black,
                 lineHeight = 20.sp
             )
             Spacer(Modifier.height(12.dp))
@@ -3147,7 +3122,7 @@ private fun CricketMarketOddsCard(
                                 a.odd,
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = CricketOddsGold
+                                color = CricketOddsOnBlue
                             )
                         }
                         Column(
@@ -3172,7 +3147,7 @@ private fun CricketMarketOddsCard(
                                 b.odd,
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = CricketOddsGold
+                                color = CricketOddsOnPink
                             )
                         }
                     }
@@ -3180,13 +3155,14 @@ private fun CricketMarketOddsCard(
                 else -> {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         market.outcomes.forEachIndexed { idx, o ->
-                            val bg = if (idx % 2 == 0) Color(0xFF0D3320) else Color(0xFF0A2E1A)
+                            val bg =
+                                if (idx % 2 == 0) CricketOddsBlue.copy(alpha = 0.12f)
+                                else CricketOddsPink.copy(alpha = 0.12f)
                             Row(
                                 Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(bg)
-                                    .border(BorderStroke(1.dp, CricketOddsAccent.copy(alpha = 0.3f)), RoundedCornerShape(10.dp))
                                     .clickable { fire(o) }
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -3197,14 +3173,14 @@ private fun CricketMarketOddsCard(
                                     modifier = Modifier.weight(1f),
                                     fontWeight = FontWeight.Medium,
                                     fontSize = 14.sp,
-                                    color = CricketOddsSubtext,
+                                    color = Color.Black,
                                     maxLines = 3
                                 )
                                 Text(
                                     o.odd,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 18.sp,
-                                    color = CricketOddsGold
+                                    color = CricketOddsAccent
                                 )
                             }
                         }
@@ -3299,7 +3275,7 @@ private fun CricketLiveStreamTopBar(modifier: Modifier = Modifier) {
 @Composable
 fun CricketOddsScreen(onBack: () -> Unit) {
     var betSelection by remember { mutableStateOf<CricketBetSelection?>(null) }
-    var selectedCricketTab by remember { mutableStateOf(0) } // 0 = Live, 1 = Pre Events
+    var selectedCricketTab by remember { mutableStateOf(1) } // 0 = Live, 1 = Pre Events
     var selectedEvent by remember { mutableStateOf<CricketEventUi?>(null) }
     var selectedEventIsPreEvent by remember { mutableStateOf(false) }
 
@@ -3347,29 +3323,21 @@ fun CricketOddsScreen(onBack: () -> Unit) {
         )
     }
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF0A1F0A))) {
-        // Top bar — dark green gradient header
-        Box(
+    Column(Modifier.fillMaxSize().background(Color(0xFFF8FAFC))) {
+        // Top bar
+        Row(
             Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(listOf(Color(0xFF1B5E20), Color(0xFF0A3D0A)))
-                )
+                .background(Color.White)
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                }
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🏏 ", fontSize = 18.sp)
-                        Text("Cricket", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Color.White)
-                    }
-                    Text("Live markets & odds", fontSize = 13.sp, color = CricketOddsSubtext)
-                }
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.Black)
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Cricket", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.Black)
+                Text("Live markets & odds", fontSize = 13.sp, color = Color.DarkGray)
             }
         }
 
@@ -3377,14 +3345,14 @@ fun CricketOddsScreen(onBack: () -> Unit) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF0D2818))
+                .background(Color.White)
                 .padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(0.dp)
         ) {
             listOf("Live", "Pre Events").forEachIndexed { idx, label ->
                 val isSelected = selectedCricketTab == idx
                 val tabColor = if (isSelected) CricketOddsAccent else Color.Transparent
-                val textColor = if (isSelected) CricketOddsAccent else Color(0xFF66BB6A)
+                val textColor = if (isSelected) CricketOddsAccent else Color(0xFF757575)
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -3401,7 +3369,7 @@ fun CricketOddsScreen(onBack: () -> Unit) {
                                 Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
-                                    .background(if (isSelected) CricketStreamLiveRed else Color(0xFF388E3C))
+                                    .background(if (isSelected) Color(0xFF2E7D32) else Color(0xFF9E9E9E))
                             )
                             Spacer(Modifier.width(6.dp))
                         }
@@ -3423,7 +3391,7 @@ fun CricketOddsScreen(onBack: () -> Unit) {
                 }
             }
         }
-        Divider(color = Color(0xFF1B5E20), thickness = 1.dp)
+        Divider(color = Color(0xFFE0E0E0), thickness = 1.dp)
 
         // Content
         val events = if (selectedCricketTab == 0) liveEvents else preEvents
@@ -3436,7 +3404,7 @@ fun CricketOddsScreen(onBack: () -> Unit) {
             }
         } else if (events.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                Text(emptyMsg, fontSize = 15.sp, color = CricketOddsSubtext, textAlign = TextAlign.Center)
+                Text(emptyMsg, fontSize = 15.sp, color = Color.DarkGray, textAlign = TextAlign.Center)
             }
         } else {
             LazyColumn(
