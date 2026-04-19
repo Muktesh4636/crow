@@ -2047,65 +2047,125 @@ private fun MaintenanceModeScreen(initialHours: Int, initialMinutes: Int) {
     val h = remainingSeconds / 3600
     val m = (remainingSeconds % 3600) / 60
     val sec = remainingSeconds % 60
-    val timeStr = String.format(Locale.US, "%02d:%02d:%02d", h, m, sec)
+
+    val infiniteTransition = rememberInfiniteTransition(label = "maint_pulse")
+    val iconAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.6f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "icon_alpha"
+    )
 
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0xFF1A1A1A)),
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF0D0D0D), Color(0xFF1A1205), Color(0xFF0D0D0D))
+                )
+            ),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(horizontal = 28.dp)
+            modifier = Modifier.padding(horizontal = 32.dp)
         ) {
-            Icon(
-                Icons.Default.Warning,
-                contentDescription = null,
-                tint = OrangePrimary,
-                modifier = Modifier.size(56.dp)
-            )
-            Spacer(Modifier.height(20.dp))
+            Box(
+                Modifier
+                    .size(90.dp)
+                    .background(OrangePrimary.copy(alpha = 0.12f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = OrangePrimary.copy(alpha = iconAlpha),
+                    modifier = Modifier.size(48.dp)
+                )
+            }
+            Spacer(Modifier.height(28.dp))
             Text(
-                "Maintenance mode",
-                fontSize = 24.sp,
+                "App Under Maintenance",
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
                 textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(14.dp))
             Text(
-                "The app is temporarily unavailable while we perform maintenance. Please check back soon.",
+                "Sorry for the inconvenience!\nWe are currently performing maintenance to improve your experience.",
                 fontSize = 15.sp,
-                color = Color.White.copy(alpha = 0.88f),
+                color = Color.White.copy(alpha = 0.80f),
                 textAlign = TextAlign.Center,
-                lineHeight = 22.sp
+                lineHeight = 23.sp
             )
+            Spacer(Modifier.height(36.dp))
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xFF242010),
+                border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(vertical = 24.dp, horizontal = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "Please come back in",
+                        fontSize = 13.sp,
+                        color = Color.White.copy(alpha = 0.55f),
+                        letterSpacing = 0.5.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (initialTotal > 0) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            MaintenanceTimeUnit(value = h, label = "HRS")
+                            Text(":", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = OrangePrimary)
+                            MaintenanceTimeUnit(value = m, label = "MIN")
+                            Text(":", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = OrangePrimary)
+                            MaintenanceTimeUnit(value = sec, label = "SEC")
+                        }
+                    } else {
+                        Text(
+                            "We'll be back shortly",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = OrangePrimary
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(28.dp))
             Text(
-                "Estimated time remaining",
+                "Thank you for your patience \uD83D\uDE4F",
                 fontSize = 13.sp,
-                color = Color.White.copy(alpha = 0.55f)
+                color = Color.White.copy(alpha = 0.45f),
+                textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun MaintenanceTimeUnit(value: Int, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = Color(0xFF2E1F00)
+        ) {
             Text(
-                timeStr,
-                fontSize = 40.sp,
+                text = String.format(Locale.US, "%02d", value),
+                fontSize = 34.sp,
                 fontWeight = FontWeight.Bold,
                 color = OrangePrimary,
                 fontFamily = FontFamily.Monospace,
-                letterSpacing = 1.sp
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
             )
-            if (initialTotal == 0) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "No ETA provided — we’ll be back shortly.",
-                    fontSize = 13.sp,
-                    color = Color.White.copy(alpha = 0.65f),
-                    textAlign = TextAlign.Center
-                )
-            }
         }
+        Spacer(Modifier.height(4.dp))
+        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), letterSpacing = 1.sp)
     }
 }
 
@@ -2176,21 +2236,34 @@ private fun UpdateAvailableDialog(
 
 @Composable
 private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
-    var maintenanceOn by remember { mutableStateOf(false) }
+    // null = still checking, false = ok, true = under maintenance
+    var maintenanceOn by remember { mutableStateOf<Boolean?>(null) }
     var remHours by remember { mutableStateOf(0) }
     var remMinutes by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         val s = fetchMaintenanceStatus()
         if (s != null && s.maintenance) {
-            maintenanceOn = true
             remHours = s.remainingHours
             remMinutes = s.remainingMinutes
+            maintenanceOn = true
+        } else {
+            maintenanceOn = false
         }
     }
-    when {
-        maintenanceOn ->
-            MaintenanceModeScreen(initialHours = remHours, initialMinutes = remMinutes)
-        else -> content()
+    when (maintenanceOn) {
+        null -> {
+            // Show a simple full-screen loading indicator while we check
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF1A1A1A)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = OrangePrimary)
+            }
+        }
+        true -> MaintenanceModeScreen(initialHours = remHours, initialMinutes = remMinutes)
+        false -> content()
     }
 }
 
