@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -44,6 +43,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +51,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -146,9 +147,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 
 /** Cock fight live stream (HLS). Same host as [API_BASE_URL]. */
 private val COCKFIGHT_LIVE_HLS_URL = apiUrl("/hls/live/stream/index.m3u8")
-
-/** How long the centered “light odds” intro (Meron + Wala) stays visible in fullscreen. */
-private const val COCKFIGHT_CENTER_INTRO_MS = 4 * 60 * 1000L
 
 /** Live cricket feed — new structured endpoint with scores & odds. */
 private val CRICKET_ODDS_API_URL = apiUrl("/api/cricket/live-events/")
@@ -2388,7 +2386,8 @@ fun MainScreen(onLogout: () -> Unit) {
     }
 
     val onHomeMain = selectedTab == "home" && currentSubScreen == "main"
-    BackHandler(enabled = !onHomeMain) {
+    // Cock fight fullscreen uses nested BackHandlers — parent must not compete or the first edge-swipe is eaten.
+    BackHandler(enabled = !onHomeMain && currentSubScreen != "cock_fight_live") {
         currentSubScreen = "main"
         selectedTab = "home"
     }
@@ -3587,215 +3586,6 @@ private fun FullscreenBetSlip(
     }
 }
 
-/** Soft pastel gradient stops for Meron / Draw / Wala “light” intro cards. */
-private fun cockfightLightCardGradient(label: String): List<Color> {
-    return when {
-        label.equals("Meron", ignoreCase = true) ->
-            listOf(Color(0xFFFFF5F6), Color(0xFFFFE4E8), Color(0xFFFCE4EC))
-        label.equals("Draw", ignoreCase = true) ->
-            listOf(Color(0xFFF7FFF8), Color(0xFFE8F5E9), Color(0xFFC8E6C9))
-        label.equals("Wala", ignoreCase = true) ->
-            listOf(Color(0xFFF5FAFF), Color(0xFFE3F2FD), Color(0xFFBBDEFB))
-        else -> listOf(Color(0xFFFAFAFA), Color(0xFFF0F0F0), Color(0xFFECEFF1))
-    }
-}
-
-@Composable
-private fun CockFightLightOddIntroCard(
-    odd: CockfightOdd,
-    lightningStagger: Int = 0,
-    onClick: () -> Unit = {}
-) {
-    val corners = RoundedCornerShape(20.dp)
-    val gradient = cockfightLightCardGradient(odd.label)
-    val transition = rememberInfiniteTransition(label = "lightIntro_${odd.label}")
-    val pulse by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1050, delayMillis = lightningStagger * 200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse"
-    )
-    val flash by transition.animateFloat(
-        initialValue = 0.08f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(380, delayMillis = lightningStagger * 140, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "flash"
-    )
-    val shimmer by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1600, delayMillis = lightningStagger * 220, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "shimmer"
-    )
-    val rim = Brush.linearGradient(
-        colors = listOf(
-            Color.White.copy(alpha = 0.55f + pulse * 0.4f),
-            Color.White.copy(alpha = 0.25f + pulse * 0.35f),
-            Color.White.copy(alpha = 0.65f + pulse * 0.3f)
-        )
-    )
-    val elev = (16f + pulse * 10f).dp
-    Box(
-        modifier = Modifier
-            .width(118.dp)
-            .height(158.dp)
-            .scale(1f + pulse * 0.042f)
-            .shadow(
-                elev,
-                corners,
-                ambientColor = odd.color.copy(alpha = 0.12f + pulse * 0.18f),
-                spotColor = Color.White.copy(alpha = 0.15f + flash * 0.45f)
-            )
-            .clip(corners)
-            .clickable(onClick = onClick)
-            .background(Brush.verticalGradient(gradient))
-            .border(BorderStroke((1.5f + pulse * 1.2f).dp, rim), corners)
-    ) {
-        // Diagonal sheen + lightning wash
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.35f + pulse * 0.2f),
-                            Color.Transparent,
-                            Color.White.copy(alpha = 0.12f + flash * 0.35f)
-                        ),
-                        start = Offset(0f, 0f),
-                        end = Offset(240f + shimmer * 80f, 280f - shimmer * 40f)
-                    )
-                )
-        )
-        // Sharp “bolt” flash
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.White.copy(alpha = 0.5f * flash),
-                            Color.Transparent
-                        ),
-                        start = Offset(shimmer * 200f, 0f),
-                        end = Offset(shimmer * 200f + 120f, 200f)
-                    )
-                )
-        )
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                odd.label,
-                color = Color(0xFF37474F),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.4.sp,
-                maxLines = 1,
-                style = TextStyle(
-                    shadow = Shadow(
-                        color = Color.White.copy(alpha = 0.4f + flash * 0.45f),
-                        offset = Offset(0f, 1f),
-                        blurRadius = 4f + flash * 6f
-                    )
-                )
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "${odd.odd}X",
-                color = odd.color.copy(alpha = 0.92f + flash * 0.08f),
-                fontSize = 26.sp,
-                fontWeight = FontWeight.ExtraBold,
-                maxLines = 1,
-                style = TextStyle(
-                    shadow = Shadow(
-                        color = Color.White.copy(alpha = 0.35f + pulse * 0.4f),
-                        offset = Offset(0f, 0f),
-                        blurRadius = 8f + flash * 10f
-                    )
-                )
-            )
-        }
-    }
-}
-
-/**
- * Cock fight fullscreen: Meron + Wala light cards only (no Draw, no title) for [COCKFIGHT_CENTER_INTRO_MS].
- * Meron enters from below; Wala enters from the right.
- */
-@Composable
-private fun BoxScope.CockFightCenterIntroOddsPanel(
-    odds: List<CockfightOdd>,
-    onPickOdd: (CockfightOdd) -> Unit
-) {
-    val meron = remember(odds) {
-        odds.find { it.label.equals("Meron", ignoreCase = true) }
-            ?: CockfightOdd("Meron", "1.90", CockMeronRed)
-    }
-    val wala = remember(odds) {
-        odds.find { it.label.equals("Wala", ignoreCase = true) }
-            ?: CockfightOdd("Wala", "1.92", CockWalaBlue)
-    }
-    val meronFromBelow = remember { Animatable(300f) }
-    val walaFromRight = remember { Animatable(340f) }
-    val meronY by produceState(300f) {
-        snapshotFlow { meronFromBelow.value }.collect { value = it }
-    }
-    val walaX by produceState(340f) {
-        snapshotFlow { walaFromRight.value }.collect { value = it }
-    }
-    LaunchedEffect(Unit) {
-        launch {
-            meronFromBelow.animateTo(
-                0f,
-                animationSpec = tween(780, easing = FastOutSlowInEasing)
-            )
-        }
-        launch {
-            walaFromRight.animateTo(
-                0f,
-                animationSpec = tween(780, easing = FastOutSlowInEasing)
-            )
-        }
-    }
-    Row(
-        modifier = Modifier
-            .align(Alignment.Center)
-            .padding(horizontal = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(22.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(modifier = Modifier.offset(y = meronY.dp)) {
-            CockFightLightOddIntroCard(
-                meron,
-                lightningStagger = 0,
-                onClick = { onPickOdd(meron) }
-            )
-        }
-        Box(modifier = Modifier.offset(x = walaX.dp)) {
-            CockFightLightOddIntroCard(
-                wala,
-                lightningStagger = 1,
-                onClick = { onPickOdd(wala) }
-            )
-        }
-    }
-}
-
 /** Pulsing border / scale “lightning” highlight for Meron / Draw / Wala in fullscreen. */
 @Composable
 private fun CockfightOddsBetCard(
@@ -3861,7 +3651,9 @@ fun CockFightLiveScreen(
     onWallet: () -> Unit,
     onOpenProfile: () -> Unit
 ) {
-    BackHandler { onBack() }
+    var isVideoFullscreen by remember { mutableStateOf(false) }
+    // While landscape fullscreen popup is open, only [CockFightHlsStream] inner BackHandler runs (one swipe = pop).
+    BackHandler(enabled = !isVideoFullscreen) { onBack() }
     val roadmapPattern = remember {
         listOf(
             listOf("M", "W", "M", "D", "W", "M", "M", "W", "W", "M", "D", "M"),
@@ -3878,7 +3670,6 @@ fun CockFightLiveScreen(
         val (w, _) = fetchWalletFromApi()
         cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
     }
-    var isVideoFullscreen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(CockDarkBg)) {
         if (!isVideoFullscreen) {
         Row(
@@ -3921,7 +3712,9 @@ fun CockFightLiveScreen(
         }
         }
         LazyColumn(
-            Modifier.fillMaxSize(),
+            Modifier
+                .weight(1f)
+                .fillMaxWidth(),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             item {
@@ -3934,6 +3727,8 @@ fun CockFightLiveScreen(
                     onSurfaceClick = null,
                     usePlaybackControls = true,
                     useHomeLocalVideo = false,
+                    useLiveLocalVideo = true,
+                    disallowPlaybackSeeking = true,
                     odds = listOf(
                         CockfightOdd("Meron", "1.90", CockMeronRed),
                         CockfightOdd("Draw", "4.46", CockDrawGreen),
@@ -4040,30 +3835,93 @@ fun GundataLiveScreen(
     onWallet: () -> Unit,
     onOpenProfile: () -> Unit
 ) {
-    BackHandler { onBack() }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        // Live stream placeholder — full screen black canvas
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            LiveStreamBlinkingDot()
-            Text(
-                text = "LIVE",
-                color = Color(0xFFE53935),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.8.sp
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+
+    // Force landscape and hide system bars
+    DisposableEffect(Unit) {
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            activity?.window?.insetsController?.let {
+                it.hide(android.view.WindowInsets.Type.systemBars())
+                it.systemBarsBehavior =
+                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            activity?.window?.decorView?.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             )
         }
-        // Back button overlay
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                activity?.window?.insetsController?.show(android.view.WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                activity?.window?.decorView?.systemUiVisibility =
+                    android.view.View.SYSTEM_UI_FLAG_VISIBLE
+            }
+        }
+    }
+
+    BackHandler { onBack() }
+
+    val exoPlayer = remember {
+        androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
+            val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.gunduata_live}")
+            setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
+            repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
+            volume = 1f
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // Video player
+        AndroidView(
+            factory = {
+                androidx.media3.ui.PlayerView(it).apply {
+                    player = exoPlayer
+                    useController = false
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // LIVE badge — centered overlay on the video
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 12.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = Color.Black.copy(alpha = 0.55f)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                LiveStreamBlinkingDot()
+                Text(
+                    text = "LIVE",
+                    color = Color(0xFFE53935),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.8.sp
+                )
+            }
+        }
+
+        // Back button — top right
         IconButton(
             onClick = onBack,
             modifier = Modifier
@@ -7640,6 +7498,17 @@ fun LiveCockFightHeader(liveEnabled: Boolean, onLiveChange: (Boolean) -> Unit) {
     }
 }
 
+/** Live cock fight: hide FF / rewind / skip and disable scrubbing on the default controller. */
+private fun androidx.media3.ui.PlayerView.applyDisallowPlaybackSeeking() {
+    setShowFastForwardButton(false)
+    setShowRewindButton(false)
+    setShowPreviousButton(false)
+    setShowNextButton(false)
+    post {
+        findViewById<android.view.View>(androidx.media3.ui.R.id.exo_progress)?.isEnabled = false
+    }
+}
+
 @Composable
 private fun CockFightHlsStream(
     modifier: Modifier = Modifier,
@@ -7647,6 +7516,10 @@ private fun CockFightHlsStream(
     usePlaybackControls: Boolean = false,
     /** Home page: loop packaged `cock_fight.mp4`. Cock Fight screen: live HLS. */
     useHomeLocalVideo: Boolean = false,
+    /** Cock Fight screen: play packaged `cockfight_live.mp4` instead of HLS stream. */
+    useLiveLocalVideo: Boolean = false,
+    /** When true (cock fight screen), user cannot skip forward / scrub on the timeline. */
+    disallowPlaybackSeeking: Boolean = false,
     odds: List<CockfightOdd> = emptyList(),
     showFullscreenButton: Boolean = true,
     onBackFromFullscreen: (() -> Unit)? = null,
@@ -7684,17 +7557,26 @@ private fun CockFightHlsStream(
         }
     }
 
-    val exoPlayer = remember(useHomeLocalVideo) {
+    val exoPlayer = remember(useHomeLocalVideo, useLiveLocalVideo) {
         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
-            if (useHomeLocalVideo) {
-                val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cock_fight}")
-                setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
-                repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
-                volume = 0f
-            } else {
-                setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(COCKFIGHT_LIVE_HLS_URL)))
-                repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
-                volume = 1f
+            when {
+                useHomeLocalVideo -> {
+                    val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cock_fight}")
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
+                    repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
+                    volume = 0f
+                }
+                useLiveLocalVideo -> {
+                    val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cockfight_live}")
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
+                    repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
+                    volume = 1f
+                }
+                else -> {
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(COCKFIGHT_LIVE_HLS_URL)))
+                    repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
+                    volume = 1f
+                }
             }
             prepare()
             playWhenReady = true
@@ -7736,8 +7618,6 @@ private fun CockFightHlsStream(
         }
     }
 
-    BackHandler(enabled = fullscreen) { exitFullscreen() }
-
     DisposableEffect(Unit) {
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -7760,8 +7640,16 @@ private fun CockFightHlsStream(
                 clippingEnabled = false
             )
         ) {
-            // Back press inside the Popup window minimises fullscreen instead of going back
-            BackHandler { exitFullscreen() }
+            // Left-edge / system back: one gesture should leave fullscreen and pop cock fight (same as toolbar).
+            BackHandler {
+                when {
+                    betSelection != null -> betSelection = null
+                    else -> {
+                        exitFullscreen()
+                        onBackFromFullscreen?.invoke()
+                    }
+                }
+            }
             val view = LocalView.current
             SideEffect {
                 val window = (view.parent as? android.view.ViewGroup)
@@ -7801,6 +7689,7 @@ private fun CockFightHlsStream(
                         androidx.media3.ui.PlayerView(it).apply {
                             player = exoPlayer
                             useController = usePlaybackControls
+                            if (disallowPlaybackSeeking) applyDisallowPlaybackSeeking()
                             layoutParams = android.view.ViewGroup.LayoutParams(
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -7810,20 +7699,33 @@ private fun CockFightHlsStream(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // Center intro: Meron + Wala light cards (see [COCKFIGHT_CENTER_INTRO_MS])
-                var centerIntroVisible by remember { mutableStateOf(true) }
-                LaunchedEffect(Unit) {
-                    delay(COCKFIGHT_CENTER_INTRO_MS)
-                    centerIntroVisible = false
-                }
-                if (centerIntroVisible) {
-                    CockFightCenterIntroOddsPanel(
-                        odds = odds,
-                        onPickOdd = { odd ->
-                            betSelection = CockfightBetSelection(odd.label, odd.odd, odd.color)
+                // Right-edge swipe-left to go back (many phones use the right bezel for back; PlayerView can steal touches).
+                Box(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight(0.62f)
+                        .width(44.dp)
+                        .pointerInput(betSelection) {
+                            var accumulated = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { accumulated = 0f },
+                                onHorizontalDrag = { _, dragAmount ->
+                                    accumulated += dragAmount
+                                    if (accumulated < -72f) {
+                                        accumulated = 0f
+                                        if (betSelection != null) {
+                                            betSelection = null
+                                        } else {
+                                            exitFullscreen()
+                                            onBackFromFullscreen?.invoke()
+                                        }
+                                    }
+                                },
+                                onDragEnd = { accumulated = 0f },
+                                onDragCancel = { accumulated = 0f }
+                            )
                         }
-                    )
-                }
+                )
 
                 // Top bar: back arrow (left) + wallet balance (right, white bg)
                 Row(
@@ -7863,27 +7765,27 @@ private fun CockFightHlsStream(
                     }
                 }
 
-                // Centre LIVE badge (hidden while intro odds panel is showing)
-                if (betSelection == null && !centerIntroVisible) {
-                    Surface(
-                        modifier = Modifier.align(Alignment.Center),
-                        shape = RoundedCornerShape(20.dp),
-                        color = Color.Black.copy(alpha = 0.55f)
+                // LIVE badge — centered overlay at the top of the video
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 12.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.55f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            LiveStreamBlinkingDot()
-                            Text(
-                                "LIVE",
-                                color = Color(0xFFE53935),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 1.sp
-                            )
-                        }
+                        LiveStreamBlinkingDot()
+                        Text(
+                            "LIVE",
+                            color = Color(0xFFE53935),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
                     }
                 }
 
@@ -7936,6 +7838,7 @@ private fun CockFightHlsStream(
                     androidx.media3.ui.PlayerView(it).apply {
                         player = exoPlayer
                         useController = usePlaybackControls
+                        if (disallowPlaybackSeeking) applyDisallowPlaybackSeeking()
                         layoutParams = android.view.ViewGroup.LayoutParams(
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT
