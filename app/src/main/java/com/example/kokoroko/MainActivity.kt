@@ -98,6 +98,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -242,6 +244,14 @@ private val AUTH_WITHDRAWS_MINE_URL = apiUrl("/api/auth/withdraws/mine/")
 private val SUPPORT_CONTACTS_API_URL = apiUrl("/api/support/contacts/")
 private val MAINTENANCE_STATUS_URL = apiUrl("/api/maintenance/status/")
 private val GAME_VERSION_URL = apiUrl("/api/game/version/")
+/** POST body: `{ "side": "MERON"|"WALA"|"DRAW", "stake": int }` */
+private val GAME_MERON_WALA_BET_URL = apiUrl("/api/game/meron-wala/bet/")
+/** GET last 50 bets for the signed-in user, newest first */
+private val GAME_MERON_WALA_BETS_MINE_URL = apiUrl("/api/game/meron-wala/bets/mine/")
+/** POST body: { "number": 1-6, "chip_amount": "50.00" } */
+private val GAME_GUNDUATA_BET_URL = apiUrl("/api/game/bet/")
+/** GET last 50 Gundu Ata bets for the signed-in user, newest first */
+private val GAME_GUNDUATA_BETS_MINE_URL = apiUrl("/api/game/bets/mine/")
 
 private const val PREFS_AUTH = "auth_prefs"
 private const val PREFS_AUTH_TOKEN_KEY = "access_token"
@@ -301,6 +311,17 @@ private object AuthTokenStore {
             .remove(PREFS_LOCAL_DEMO_USER)
             .apply()
     }
+}
+
+/**
+ * Fires whenever any authenticated API call receives HTTP 401.
+ * The root composable collects this and immediately navigates to the login screen.
+ */
+private val sessionExpiredEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+/** Call from any suspend function that receives a 401 to force the user back to login. */
+private suspend fun notifySessionExpired() {
+    sessionExpiredEvents.emit(Unit)
 }
 
 /** Case-insensitive username -> password for offline demo accounts (not on the server). */
@@ -688,8 +709,10 @@ private suspend fun fetchWalletFromApi(): Pair<WalletApiResult?, String?> =
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 ->
+                    resp.code == 401 -> {
+                        notifySessionExpired()
                         Pair(null, "Session expired. Please sign in again.")
+                    }
                     !resp.isSuccessful || text.isBlank() ->
                         Pair(null, "Could not load payment details (${resp.code}).")
                     else -> Pair(parseWalletResponseBody(text), null)
@@ -867,7 +890,7 @@ private suspend fun fetchAuthProfile(): Pair<ProfileDetailsApi?, String?> =
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 -> Pair(null, "Session expired. Please sign in again.")
+                    resp.code == 401 -> { notifySessionExpired(); Pair(null, "Session expired. Please sign in again.") }
                     !resp.isSuccessful || text.isBlank() ->
                         Pair(null, "Could not load profile (${resp.code}).")
                     else -> Pair(parseProfileFromJson(JSONObject(text)), null)
@@ -1091,7 +1114,7 @@ private suspend fun fetchAuthBankDetails(): Pair<AuthBankDetailsApi?, String?> =
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 -> Pair(null, "Session expired. Please sign in again.")
+                    resp.code == 401 -> { notifySessionExpired(); Pair(null, "Session expired. Please sign in again.") }
                     !resp.isSuccessful || text.isBlank() ->
                         Pair(null, "Could not load bank details (${resp.code}).")
                     else -> Pair(parseAuthBankDetailsBody(text), null)
@@ -2288,6 +2311,20 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.background
                     ) {
                         val logoutScope = rememberCoroutineScope()
+
+                        // Listen for session-expiry signals from any API call that gets a 401
+                        LaunchedEffect(Unit) {
+                            sessionExpiredEvents.asSharedFlow().collect {
+                                AuthTokenStore.clear(activityContext)
+                                currentScreen = "login"
+                                Toast.makeText(
+                                    activityContext,
+                                    "Session expired. Please sign in again.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+
                         when (currentScreen) {
                         "splash" -> SplashScreen { currentScreen = "login" }
                         "login" -> LoginScreen(
@@ -3437,11 +3474,250 @@ private val CockDarkBg = Color(0xFF0D0D0D)
 private data class CockfightOdd(val label: String, val odd: String, val color: Color)
 private data class CockfightBetSelection(val label: String, val odd: String, val color: Color)
 
+private fun cockfightLabelToSideApi(label: String): String? =
+    when (label.trim().uppercase(Locale.US)) {
+        "MERON", "M" -> "MERON"
+        "WALA", "W" -> "WALA"
+        "DRAW", "D" -> "DRAW"
+        else -> null
+    }
+
+private data class MeronWalaBetSuccess(
+    val betId: Int,
+    val sessionId: Int,
+    val side: String,
+    val stake: Int,
+    val odds: String,
+    val potentialPayout: Int,
+    val walletBalance: String
+)
+
+/** One entry from GET /api/game/meron-wala/bets/mine/ */
+private data class MeronWalaBetRecord(
+    val id: Int,
+    val session: Int,
+    val side: String,
+    val stake: Int,
+    val odds: String,
+    val potentialPayout: Int,
+    val status: String,       // PENDING / WON / LOST / VOID
+    val payoutAmount: Int,
+    val createdAt: String
+)
+
+private suspend fun fetchMeronWalaBetHistory(): Pair<List<MeronWalaBetRecord>, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(emptyList(), "Sign in to view your bets.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(emptyList(), "No history for demo accounts.")
+        }
+        try {
+            val req = Request.Builder()
+                .url(GAME_MERON_WALA_BETS_MINE_URL)
+                .get()
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer $token")
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when (resp.code) {
+                    200 -> {
+                        val arr = runCatching { JSONArray(text) }.getOrNull()
+                            ?: return@withContext Pair(emptyList(), "Invalid response.")
+                        val list = (0 until arr.length()).mapNotNull { i ->
+                            val j = arr.optJSONObject(i) ?: return@mapNotNull null
+                            MeronWalaBetRecord(
+                                id = j.optIntValue("id", -1),
+                                session = j.optIntValue("session", -1),
+                                side = j.optString("side", "").trim(),
+                                stake = j.optIntValue("stake", 0),
+                                odds = j.optString("odds", "").trim(),
+                                potentialPayout = j.optIntValue("potential_payout", 0),
+                                status = j.optString("status", "").trim().uppercase(Locale.US),
+                                payoutAmount = j.optIntValue("payout_amount", 0),
+                                createdAt = j.optString("created_at", "").trim()
+                            )
+                        }
+                        Pair(list, null)
+                    }
+                    401 -> Pair(emptyList(), "Session expired. Please sign in again.")
+                    else -> {
+                        val errMsg = runCatching {
+                            JSONObject(text).optString("error", "").ifBlank {
+                                JSONObject(text).optString("detail", "")
+                            }
+                        }.getOrNull().orEmpty()
+                        Pair(emptyList(), errMsg.ifBlank { "Failed to load history (${resp.code})." })
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Pair(emptyList(), e.message ?: "Network error")
+        }
+    }
+
+private fun formatBetDateTime(isoDate: String): String = runCatching {
+    val clean = isoDate.substringBefore(".").let { s ->
+        if (s.length >= 19) s else isoDate.take(19)
+    }
+    val inFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
+    val date = inFmt.parse(clean) ?: return@runCatching isoDate.take(16).replace("T", " ")
+    SimpleDateFormat("MMM d, h:mm a", Locale.US).format(date)
+}.getOrDefault(isoDate.take(16).replace("T", " "))
+
+private data class GundataBetSuccess(
+    val message: String,
+    val walletBalance: String,
+    val roundId: String,
+    val number: Int,
+    val chipAmount: String,
+    val maxBet: Double
+)
+
+private fun extractErrorBody(text: String): String {
+    val j = runCatching { org.json.JSONObject(text) }.getOrNull() ?: return ""
+    j.optString("error", "").ifBlank { null }?.let { return it }
+    j.optString("detail", "").ifBlank { null }?.let { return it }
+    // field-level validation errors: collect first non-empty array / string value
+    val keys = j.keys()
+    while (keys.hasNext()) {
+        val k = keys.next()
+        val v = j.opt(k)
+        val msg = when (v) {
+            is org.json.JSONArray -> if (v.length() > 0) v.optString(0) else ""
+            is String -> v
+            else -> ""
+        }
+        if (msg.isNotBlank()) return "$k: $msg"
+    }
+    return ""
+}
+
+private suspend fun postGundataBet(number: Int, stakeInt: Int): Pair<GundataBetSuccess?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in to place a bet.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(null, "Offline demo account cannot place bets.")
+        }
+        if (number !in 1..6) return@withContext Pair(null, "Pick a number between 1 and 6.")
+        if (stakeInt <= 0) return@withContext Pair(null, "Enter a valid stake.")
+        if (stakeInt > 50_000) return@withContext Pair(null, "Maximum bet amount is ₹50,000.")
+        try {
+            val chipFormatted = "%.2f".format(stakeInt.toDouble())
+            val json = org.json.JSONObject().apply {
+                put("number", number)
+                put("chip_amount", chipFormatted)
+            }
+            val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req = Request.Builder()
+                .url(GAME_GUNDUATA_BET_URL)
+                .post(body)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer $token")
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                val errBody = extractErrorBody(text)
+                when (resp.code) {
+                    201, 200 -> {
+                        val j = runCatching { org.json.JSONObject(text) }.getOrNull()
+                            ?: return@withContext Pair(null, "Invalid response.")
+                        Pair(
+                            GundataBetSuccess(
+                                message   = j.optString("message", "Bet placed"),
+                                walletBalance = j.optString("wallet_balance", "").trim(),
+                                roundId   = j.optString("round_id", "").trim(),
+                                number    = j.optInt("number", number),
+                                chipAmount = j.optString("chip_amount", chipFormatted).trim(),
+                                maxBet    = j.optDouble("max_bet", 50_000.0)
+                            ),
+                            null
+                        )
+                    }
+                    400 -> Pair(null, errBody.ifBlank { "Betting is closed for this round." })
+                    401 -> Pair(null, errBody.ifBlank { "Session expired. Please sign in again." })
+                    403 -> Pair(null, errBody.ifBlank { "Admins cannot place bets." })
+                    else -> Pair(null, errBody.ifBlank { "Bet failed (${resp.code})." })
+                }
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
+private suspend fun postMeronWalaBet(side: String, stake: Int): Pair<MeronWalaBetSuccess?, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(null, "Sign in to place a bet.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(null, "Offline demo account cannot place bets.")
+        }
+        if (stake <= 0) return@withContext Pair(null, "Enter a valid stake.")
+        if (stake > 50_000) return@withContext Pair(null, "Maximum bet amount is 50000.")
+        try {
+            val json =
+                JSONObject().apply {
+                    put("side", side)
+                    put("stake", stake)
+                }
+            val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req =
+                Request.Builder()
+                    .url(GAME_MERON_WALA_BET_URL)
+                    .post(body)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                val errBody =
+                    runCatching {
+                        JSONObject(text).optString("error", "").ifBlank {
+                            JSONObject(text).optString("detail", "")
+                        }
+                    }.getOrNull().orEmpty()
+                when (resp.code) {
+                    201 -> {
+                        val j = runCatching { JSONObject(text) }.getOrNull()
+                            ?: return@withContext Pair(null, "Invalid response.")
+                        Pair(
+                            MeronWalaBetSuccess(
+                                betId = j.optIntValue("bet_id", -1),
+                                sessionId = j.optIntValue("session_id", -1),
+                                side = j.optString("side", "").trim(),
+                                stake = j.optIntValue("stake", stake),
+                                odds = j.optString("odds", "").trim(),
+                                potentialPayout = j.optIntValue("potential_payout", 0),
+                                walletBalance = j.optString("wallet_balance", "").trim()
+                            ),
+                            null
+                        )
+                    }
+                    401 -> Pair(null, errBody.ifBlank { "Session expired. Please sign in again." })
+                    else -> Pair(null, errBody.ifBlank { "Bet failed (${resp.code})." })
+                }
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
+
 @Composable
 private fun FullscreenBetSlip(
     selection: CockfightBetSelection,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** Return `null` on success, or an error message. */
+    onPlaceBet: suspend (stake: Int) -> String?
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var placing by remember { mutableStateOf(false) }
     var stakeText by remember { mutableStateOf("100") }
     val chips = listOf(100, 200, 500, 1000, 2000, 5000)
     val stake = stakeText.toIntOrNull() ?: 0
@@ -3559,8 +3835,29 @@ private fun FullscreenBetSlip(
                 Spacer(Modifier.height(12.dp))
                 // ── PLACE BET BUTTON ── large, prominent, always visible
                 Button(
-                    onClick = { onDismiss() },
-                    enabled = stake > 0,
+                    onClick = {
+                        if (stake <= 0 || stake > 50_000) {
+                            Toast.makeText(
+                                context,
+                                if (stake > 50_000) "Maximum bet is ₹50,000" else "Enter a valid amount",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@Button
+                        }
+                        if (placing) return@Button
+                        scope.launch {
+                            placing = true
+                            val err = onPlaceBet(stake)
+                            placing = false
+                            if (err == null) {
+                                Toast.makeText(context, "Bet placed", Toast.LENGTH_SHORT).show()
+                                onDismiss()
+                            } else {
+                                Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    enabled = stake > 0 && !placing,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(60.dp),
@@ -3571,16 +3868,165 @@ private fun FullscreenBetSlip(
                     ),
                     elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
                 ) {
-                    Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                    if (placing) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        "PLACE BET  ₹$stake",
+                        if (placing) "Placing…" else "PLACE BET  ₹$stake",
                         color = Color.White,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 18.sp,
                         letterSpacing = 0.5.sp
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CockfightBetHistoryPanel(onDismiss: () -> Unit) {
+    var loading by remember { mutableStateOf(true) }
+    var bets by remember { mutableStateOf<List<MeronWalaBetRecord>>(emptyList()) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        val (list, err) = fetchMeronWalaBetHistory()
+        bets = list
+        errorMsg = err
+        loading = false
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.70f))
+            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { onDismiss() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.88f)
+                .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {},
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = Color(0xFF1A1A1A)
+        ) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                Box(
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(top = 10.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .background(Color(0xFF444444), CircleShape)
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("My Recent Bets", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    }
+                }
+                Divider(color = Color(0xFF333333), thickness = 1.dp)
+                Spacer(Modifier.height(4.dp))
+                when {
+                    loading -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = OrangePrimary)
+                    }
+                    errorMsg != null -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text(errorMsg ?: "", color = Color(0xFFAAAAAA), textAlign = TextAlign.Center, fontSize = 14.sp)
+                    }
+                    bets.isEmpty() -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.History, contentDescription = null, tint = Color(0xFF555555), modifier = Modifier.size(52.dp))
+                            Spacer(Modifier.height(10.dp))
+                            Text("No bets placed yet", color = Color(0xFF888888), fontSize = 15.sp)
+                        }
+                    }
+                    else -> LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        items(bets) { bet -> CockfightBetHistoryRow(bet) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
+    val sideColor = when (bet.side) {
+        "MERON" -> CockMeronRed
+        "WALA"  -> CockWalaBlue
+        "DRAW"  -> CockDrawGreen
+        else    -> Color.Gray
+    }
+    val statusColor = when (bet.status) {
+        "WON"  -> Color(0xFF4CAF50)
+        "LOST" -> Color(0xFFE53935)
+        "VOID" -> Color(0xFF9E9E9E)
+        else   -> OrangePrimary
+    }
+    Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF252525)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(shape = RoundedCornerShape(6.dp), color = sideColor.copy(alpha = 0.15f)) {
+                Text(
+                    bet.side,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    color = sideColor,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 0.3.sp
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "₹${bet.stake}  ×  ${bet.odds}",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    formatBetDateTime(bet.createdAt),
+                    color = Color(0xFF888888),
+                    fontSize = 10.sp
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = 0.15f)) {
+                    Text(
+                        bet.status,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = statusColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (bet.status == "WON") "+₹${bet.payoutAmount}" else "pot. ₹${bet.potentialPayout}",
+                    color = if (bet.status == "WON") Color(0xFF4CAF50) else Color(0xFF666666),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp
+                )
             }
         }
     }
@@ -3666,6 +4112,7 @@ fun CockFightLiveScreen(
     }
 
     var cockfightWalletText by remember { mutableStateOf("₹0") }
+    var showCockfightBetHistory by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val (w, _) = fetchWalletFromApi()
         cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
@@ -3737,6 +4184,9 @@ fun CockFightLiveScreen(
                     onBackFromFullscreen = onBack,
                     walletBalance = cockfightWalletText,
                     onWalletBalanceClick = onWallet,
+                    onWalletBalanceAfterBet = { bal ->
+                        cockfightWalletText = formatRupeeBalanceForDisplay(bal)
+                    },
                     onFullscreenChanged = { isVideoFullscreen = it },
                     startFullscreen = true
                 )
@@ -3812,7 +4262,27 @@ fun CockFightLiveScreen(
                 }
             }
             }
+            if (!isVideoFullscreen) {
+            item {
+                OutlinedButton(
+                    onClick = { showCockfightBetHistory = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, OrangePrimary)
+                ) {
+                    Icon(Icons.Default.History, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("My Recent Bets", color = OrangePrimary, fontWeight = FontWeight.Bold)
+                }
+            }
+            }
         }
+    }
+
+    if (showCockfightBetHistory) {
+        CockfightBetHistoryPanel(onDismiss = { showCockfightBetHistory = false })
     }
 }
 
@@ -3829,6 +4299,208 @@ private fun RoadmapLegendDot(color: Color, label: String) {
     }
 }
 
+private data class GundataBetRecord(
+    val id: Int,
+    val roundId: String,
+    val number: Int,
+    val chipAmount: String,
+    val status: String,       // PENDING / WON / LOST / VOID
+    val payoutAmount: String,
+    val createdAt: String
+)
+
+private suspend fun fetchGundataBetHistory(): Pair<List<GundataBetRecord>, String?> =
+    withContext(Dispatchers.IO) {
+        val token = AuthTokenStore.accessToken
+            ?: return@withContext Pair(emptyList(), "Sign in to view your bets.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(emptyList(), "No history for demo accounts.")
+        }
+        try {
+            val req = Request.Builder()
+                .url(GAME_GUNDUATA_BETS_MINE_URL)
+                .get()
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer $token")
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when (resp.code) {
+                    200 -> {
+                        val arr = runCatching { JSONArray(text) }.getOrNull()
+                            ?: return@withContext Pair(emptyList(), "Invalid response.")
+                        val list = (0 until arr.length()).mapNotNull { i ->
+                            val j = arr.optJSONObject(i) ?: return@mapNotNull null
+                            GundataBetRecord(
+                                id          = j.optIntValue("id", -1),
+                                roundId     = j.optString("round_id", "").trim(),
+                                number      = j.optInt("number", 0),
+                                chipAmount  = j.optString("chip_amount", "0").trim(),
+                                status      = j.optString("status", "").trim().uppercase(Locale.US),
+                                payoutAmount = j.optString("payout_amount", "0").trim(),
+                                createdAt   = j.optString("created_at", "").trim()
+                            )
+                        }
+                        Pair(list, null)
+                    }
+                    401 -> Pair(emptyList(), "Session expired. Please sign in again.")
+                    404 -> Pair(emptyList(), "Bet history is not available yet.")
+                    else -> {
+                        val errMsg = runCatching {
+                            JSONObject(text).optString("error", "").ifBlank {
+                                JSONObject(text).optString("detail", "")
+                            }
+                        }.getOrNull().orEmpty()
+                        Pair(emptyList(), errMsg.ifBlank { "Failed to load history (${resp.code})." })
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Pair(emptyList(), e.message ?: "Network error")
+        }
+    }
+
+@Composable
+private fun GundataBetHistoryPanel(onDismiss: () -> Unit) {
+    var loading by remember { mutableStateOf(true) }
+    var bets by remember { mutableStateOf<List<GundataBetRecord>>(emptyList()) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        val (list, err) = fetchGundataBetHistory()
+        bets = list
+        errorMsg = err
+        loading = false
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.70f))
+            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { onDismiss() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.88f)
+                .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {},
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = Color(0xFF1A1A1A)
+        ) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                Box(
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(top = 10.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .background(Color(0xFF444444), CircleShape)
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("My Recent Bets", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    }
+                }
+                Divider(color = Color(0xFF333333), thickness = 1.dp)
+                Spacer(Modifier.height(4.dp))
+                when {
+                    loading -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = OrangePrimary)
+                    }
+                    errorMsg != null -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text(errorMsg ?: "", color = Color(0xFFAAAAAA), textAlign = TextAlign.Center, fontSize = 14.sp)
+                    }
+                    bets.isEmpty() -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.History, contentDescription = null, tint = Color(0xFF555555), modifier = Modifier.size(52.dp))
+                            Spacer(Modifier.height(10.dp))
+                            Text("No bets placed yet", color = Color(0xFF888888), fontSize = 15.sp)
+                        }
+                    }
+                    else -> LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        items(bets) { bet -> GundataBetHistoryRow(bet) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GundataBetHistoryRow(bet: GundataBetRecord) {
+    val diceEmojis = mapOf(1 to "⚀", 2 to "⚁", 3 to "⚂", 4 to "⚃", 5 to "⚄", 6 to "⚅")
+    val statusColor = when (bet.status) {
+        "WON"  -> Color(0xFF4CAF50)
+        "LOST" -> Color(0xFFE53935)
+        "VOID" -> Color(0xFF9E9E9E)
+        else   -> OrangePrimary
+    }
+    Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF252525)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Dice face + number
+            Surface(shape = RoundedCornerShape(8.dp), color = OrangePrimary.copy(alpha = 0.15f)) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(diceEmojis[bet.number] ?: "?", fontSize = 20.sp)
+                    Text(
+                        bet.number.toString(),
+                        color = OrangePrimary,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "₹${bet.chipAmount}  ×  6.0",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    formatBetDateTime(bet.createdAt),
+                    color = Color(0xFF888888),
+                    fontSize = 10.sp
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = 0.15f)) {
+                    Text(
+                        bet.status,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = statusColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (bet.status == "WON") "+₹${bet.payoutAmount}" else "₹${bet.chipAmount}",
+                    color = if (bet.status == "WON") Color(0xFF4CAF50) else Color(0xFF666666),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun GundataLiveScreen(
     onBack: () -> Unit,
@@ -3837,23 +4509,44 @@ fun GundataLiveScreen(
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
+    var isMaximized by remember { mutableStateOf(false) }
+    var gundataBetSelection by remember { mutableStateOf<Int?>(null) } // 1-6
+    var showGundataBetHistory by remember { mutableStateOf(false) }
+    var walletText by remember { mutableStateOf("₹0") }
+    val scope = rememberCoroutineScope()
 
-    // Force landscape and hide system bars
-    DisposableEffect(Unit) {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            activity?.window?.insetsController?.let {
-                it.hide(android.view.WindowInsets.Type.systemBars())
-                it.systemBarsBehavior =
-                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    LaunchedEffect(Unit) {
+        val (w, _) = fetchWalletFromApi()
+        walletText = formatRupeeBalanceForDisplay(w?.balance)
+    }
+
+    // Orientation: landscape when maximized, portrait when minimized
+    DisposableEffect(isMaximized) {
+        if (isMaximized) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                activity?.window?.insetsController?.let {
+                    it.hide(android.view.WindowInsets.Type.systemBars())
+                    it.systemBarsBehavior =
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                activity?.window?.decorView?.systemUiVisibility = (
+                    android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
             }
         } else {
-            @Suppress("DEPRECATION")
-            activity?.window?.decorView?.systemUiVisibility = (
-                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
-                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            )
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                activity?.window?.insetsController?.show(android.view.WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                activity?.window?.decorView?.systemUiVisibility =
+                    android.view.View.SYSTEM_UI_FLAG_VISIBLE
+            }
         }
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -3867,8 +4560,6 @@ fun GundataLiveScreen(
         }
     }
 
-    BackHandler { onBack() }
-
     val exoPlayer = remember {
         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
             val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.gunduata_live}")
@@ -3881,64 +4572,255 @@ fun GundataLiveScreen(
     }
     DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // Video player
-        AndroidView(
-            factory = {
-                androidx.media3.ui.PlayerView(it).apply {
-                    player = exoPlayer
-                    useController = false
-                    layoutParams = android.view.ViewGroup.LayoutParams(
-                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+    BackHandler {
+        when {
+            showGundataBetHistory -> showGundataBetHistory = false
+            isMaximized -> isMaximized = false
+            else -> onBack()
+        }
+    }
+
+    val diceItems = remember {
+        listOf(
+            Triple(1, "ONE", "⚀"),
+            Triple(2, "TWO", "⚁"),
+            Triple(3, "THREE", "⚂"),
+            Triple(4, "FOUR", "⚃"),
+            Triple(5, "FIVE", "⚄"),
+            Triple(6, "SIX", "⚅")
+        )
+    }
+
+    if (isMaximized) {
+        // ── MAXIMIZED: full-screen landscape video ──────────────────────────
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            AndroidView(
+                factory = {
+                    androidx.media3.ui.PlayerView(it).apply {
+                        player = exoPlayer
+                        useController = false
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            // LIVE badge — top center
+            Surface(
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.Black.copy(alpha = 0.55f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    LiveStreamBlinkingDot()
+                    Text("LIVE", color = Color(0xFFE53935), fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                }
+            }
+            // Minimize button — top left
+            IconButton(
+                onClick = { isMaximized = false },
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+            ) {
+                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                    Icon(
+                            imageVector = Icons.Default.FullscreenExit,
+                            contentDescription = "Minimise",
+                        tint = Color.White,
+                        modifier = Modifier.padding(6.dp).size(22.dp)
                     )
                 }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-
-        // LIVE badge — centered overlay on the video
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 12.dp),
-            shape = RoundedCornerShape(20.dp),
-            color = Color.Black.copy(alpha = 0.55f)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            }
+            // Back button — top right
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
             ) {
-                LiveStreamBlinkingDot()
-                Text(
-                    text = "LIVE",
-                    color = Color(0xFFE53935),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.8.sp
+                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.padding(6.dp).size(22.dp))
+                }
+            }
+            // History button — top right, just below back
+            IconButton(
+                onClick = { showGundataBetHistory = true },
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 64.dp, end = 8.dp)
+            ) {
+                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                    Icon(Icons.Default.History, contentDescription = "My Bets", tint = Color.White, modifier = Modifier.padding(6.dp).size(22.dp))
+                }
+            }
+            // History panel overlay in fullscreen
+            if (showGundataBetHistory) {
+                GundataBetHistoryPanel(onDismiss = { showGundataBetHistory = false })
+            }
+        }
+    } else {
+        // ── MINIMISED: portrait — video at top, number bets below ───────────
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0F0F0F))
+        ) {
+            // Top bar
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                }
+                Text("GUNDUATA LIVE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 0.6.sp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    WalletBalanceChip(onClick = onWallet, balanceText = walletText, spacerBetweenIconAndText = 6.dp)
+                    IconButton(onClick = { showGundataBetHistory = true }) {
+                        Icon(Icons.Default.History, contentDescription = "My Bets", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                }
+            }
+
+            // Video box with maximize button overlay
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .background(Color.Black)
+            ) {
+                AndroidView(
+                    factory = {
+                        androidx.media3.ui.PlayerView(it).apply {
+                            player = exoPlayer
+                            useController = false
+                            layoutParams = android.view.ViewGroup.LayoutParams(
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
                 )
+                // LIVE badge
+                Surface(
+                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.Black.copy(alpha = 0.6f)
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        LiveStreamBlinkingDot()
+                        Text("LIVE", color = Color(0xFFE53935), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                // Maximise button — bottom right of video
+                IconButton(
+                    onClick = { isMaximized = true },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)
+                ) {
+                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.55f)) {
+                        Icon(
+                            imageVector = Icons.Default.Fullscreen,
+                            contentDescription = "Maximise",
+                            tint = Color.White,
+                            modifier = Modifier.padding(6.dp).size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            // Number betting section
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Text(
+                    "Place Your Bet",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                // 6 number cards in a 3×2 grid
+                for (row in 0..1) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        for (col in 0..2) {
+                            val idx = row * 3 + col
+                            val (num, word, emoji) = diceItems[idx]
+                            GundataDiceCard(
+                                num = num,
+                                word = word,
+                                emoji = emoji,
+                                selected = gundataBetSelection == num,
+                                onClick = { gundataBetSelection = num },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    if (row == 0) Spacer(Modifier.height(10.dp))
+                }
+
+                // Place bet button — visible when a number is selected
+                if (gundataBetSelection != null) {
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = { /* bet slip shown below */ },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                    ) {
+                        Text("Bet on ${gundataBetSelection}", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { showGundataBetHistory = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, OrangePrimary)
+                ) {
+                    Icon(Icons.Default.History, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("My Recent Bets", color = OrangePrimary, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
-        // Back button — top right
-        IconButton(
-            onClick = onBack,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(8.dp)
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.5f)
-            ) {
-                Icon(
-                    Icons.Default.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White,
-                    modifier = Modifier.padding(6.dp).size(22.dp)
-                )
-            }
+        // History panel overlay in portrait
+        if (showGundataBetHistory) {
+            GundataBetHistoryPanel(onDismiss = { showGundataBetHistory = false })
+        }
+
+        // Bet slip bottom sheet when a number is selected
+        gundataBetSelection?.let { selectedNum ->
+            FullscreenBetSlip(
+                selection = CockfightBetSelection(
+                    label = "Number $selectedNum",
+                    odd = "6.00",
+                    color = OrangePrimary
+                ),
+                onDismiss = { gundataBetSelection = null },
+                onPlaceBet = { stake ->
+                    val (result, err) = postGundataBet(selectedNum, stake)
+                    if (result != null) {
+                        walletText = formatRupeeBalanceForDisplay(result.walletBalance.toBigDecimalOrNull()?.toString())
+                        gundataBetSelection = null
+                    }
+                    err
+                }
+            )
         }
     }
 }
@@ -5212,8 +6094,10 @@ private suspend fun fetchMyWithdrawals(): Pair<List<WithdrawRecordApi>, String?>
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 ->
+                    resp.code == 401 -> {
+                        notifySessionExpired()
                         Pair(emptyList(), "Session expired. Please sign in again.")
+                    }
                     !resp.isSuccessful ->
                         Pair(emptyList(), "Could not load withdrawals (${resp.code}).")
                     else -> Pair(parseWithdrawalsResponse(text), null)
@@ -5245,8 +6129,10 @@ private suspend fun fetchMyDeposits(): Pair<List<DepositRecordApi>, String?> =
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 ->
+                    resp.code == 401 -> {
+                        notifySessionExpired()
                         Pair(emptyList(), "Session expired. Please sign in again.")
+                    }
                     !resp.isSuccessful ->
                         Pair(emptyList(), "Could not load deposits (${resp.code}).")
                     else -> Pair(parseDepositsResponse(text), null)
@@ -7504,8 +8390,14 @@ private fun androidx.media3.ui.PlayerView.applyDisallowPlaybackSeeking() {
     setShowRewindButton(false)
     setShowPreviousButton(false)
     setShowNextButton(false)
+    // Hide and disable the seek/progress bar entirely
     post {
-        findViewById<android.view.View>(androidx.media3.ui.R.id.exo_progress)?.isEnabled = false
+        val seekBar = findViewById<android.view.View>(androidx.media3.ui.R.id.exo_progress)
+        seekBar?.isEnabled = false
+        seekBar?.visibility = android.view.View.GONE
+        // Also hide the time labels next to the seek bar
+        findViewById<android.view.View>(androidx.media3.ui.R.id.exo_position)?.visibility = android.view.View.GONE
+        findViewById<android.view.View>(androidx.media3.ui.R.id.exo_duration)?.visibility = android.view.View.GONE
     }
 }
 
@@ -7526,6 +8418,8 @@ private fun CockFightHlsStream(
     walletBalance: String = "",
     /** Tap balance pill in fullscreen (e.g. open deposit). Null = not clickable. */
     onWalletBalanceClick: (() -> Unit)? = null,
+    /** After a successful Meron/Wala bet, server `wallet_balance` (e.g. "900.00") for UI refresh. */
+    onWalletBalanceAfterBet: ((String) -> Unit)? = null,
     onFullscreenChanged: ((Boolean) -> Unit)? = null,
     startFullscreen: Boolean = false
 ) {
@@ -7533,6 +8427,7 @@ private fun CockFightHlsStream(
     val activity = remember(context) { context.findActivity() }
     var fullscreen by remember { mutableStateOf(false) }
     var betSelection by remember { mutableStateOf<CockfightBetSelection?>(null) }
+    var showHistory by remember { mutableStateOf(false) }
 
     // Auto-enter fullscreen when opened from the cock fight screen
     LaunchedEffect(startFullscreen) {
@@ -7644,6 +8539,7 @@ private fun CockFightHlsStream(
             BackHandler {
                 when {
                     betSelection != null -> betSelection = null
+                    showHistory -> showHistory = false
                     else -> {
                         exitFullscreen()
                         onBackFromFullscreen?.invoke()
@@ -7683,13 +8579,12 @@ private fun CockFightHlsStream(
                     .fillMaxSize()
                     .background(Color.Black)
             ) {
-                // Video player
+                // Video player — controller fully disabled, touch intercepted below
                 AndroidView(
                     factory = {
                         androidx.media3.ui.PlayerView(it).apply {
                             player = exoPlayer
-                            useController = usePlaybackControls
-                            if (disallowPlaybackSeeking) applyDisallowPlaybackSeeking()
+                            useController = false
                             layoutParams = android.view.ViewGroup.LayoutParams(
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -7697,6 +8592,15 @@ private fun CockFightHlsStream(
                         }
                     },
                     modifier = Modifier.fillMaxSize()
+                )
+                // Transparent overlay — consumes all taps so nothing pauses/stops the video
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        ) { /* swallow tap — video keeps playing */ }
                 )
 
                 // Right-edge swipe-left to go back (many phones use the right bezel for back; PlayerView can steal touches).
@@ -7745,21 +8649,28 @@ private fun CockFightHlsStream(
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.padding(8.dp))
                         }
                     }
-                    // Wallet balance — white pill on the top-right (tap opens deposit when callback set)
-                    if (walletBalance.isNotEmpty()) {
-                        Surface(
-                            onClick = { onWalletBalanceClick?.invoke() },
-                            enabled = onWalletBalanceClick != null,
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color.White
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        IconButton(onClick = { showHistory = true }) {
+                            Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                                Icon(Icons.Default.History, contentDescription = "My Bets", tint = Color.White, modifier = Modifier.padding(8.dp).size(18.dp))
+                            }
+                        }
+                        // Wallet balance — white pill on the top-right
+                        if (walletBalance.isNotEmpty()) {
+                            Surface(
+                                onClick = { onWalletBalanceClick?.invoke() },
+                                enabled = onWalletBalanceClick != null,
+                                shape = RoundedCornerShape(20.dp),
+                                color = Color.White
                             ) {
-                                Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(16.dp))
-                                Text(walletBalance, color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(16.dp))
+                                    Text(walletBalance, color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
@@ -7817,8 +8728,27 @@ private fun CockFightHlsStream(
                 betSelection?.let { sel ->
                     FullscreenBetSlip(
                         selection = sel,
-                        onDismiss = { betSelection = null }
+                        onDismiss = { betSelection = null },
+                        onPlaceBet = { amount ->
+                            val side = cockfightLabelToSideApi(sel.label)
+                            if (side == null) {
+                                "Invalid bet side"
+                            } else {
+                                val (ok, err) = postMeronWalaBet(side, amount)
+                                if (ok != null) {
+                                    onWalletBalanceAfterBet?.invoke(ok.walletBalance)
+                                    null
+                                } else {
+                                    err
+                                }
+                            }
+                        }
                     )
+                }
+
+                // Betting history overlay
+                if (showHistory) {
+                    CockfightBetHistoryPanel(onDismiss = { showHistory = false })
                 }
             }
         }
@@ -7837,8 +8767,7 @@ private fun CockFightHlsStream(
                 factory = {
                     androidx.media3.ui.PlayerView(it).apply {
                         player = exoPlayer
-                        useController = usePlaybackControls
-                        if (disallowPlaybackSeeking) applyDisallowPlaybackSeeking()
+                        useController = false
                         layoutParams = android.view.ViewGroup.LayoutParams(
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT
