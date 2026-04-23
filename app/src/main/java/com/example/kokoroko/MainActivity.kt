@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package com.example.kokoroko
 
 import android.app.Activity
@@ -35,6 +36,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.*
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -45,6 +48,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -62,6 +66,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -252,6 +257,85 @@ private val GAME_MERON_WALA_BETS_MINE_URL = apiUrl("/api/game/meron-wala/bets/mi
 private val GAME_GUNDUATA_BET_URL = apiUrl("/api/game/bet/")
 /** GET last 50 Gundu Ata bets for the signed-in user, newest first */
 private val GAME_GUNDUATA_BETS_MINE_URL = apiUrl("/api/game/bets/mine/")
+/**
+ * Public JSON list of past cock-fight highlight videos (admin-configured).
+ * Expected shape examples:
+ * `{ "highlights": [ { "title": "...", "video_url": "https://...", "thumbnail_url": "https://..." } ] }`
+ * or top-level `[ {...}, ... ]` — app uses at most 4 entries.
+ */
+private val COCKFIGHT_HIGHLIGHTS_API_URL = apiUrl("/api/cockfight/highlights/")
+
+/** Up to four items from [COCKFIGHT_HIGHLIGHTS_API_URL]. */
+private data class CockfightHighlightVideo(
+    val title: String,
+    val videoUrl: String,
+    val thumbnailUrl: String?
+)
+
+private fun extractCockfightHighlightsArray(root: JSONObject): JSONArray? {
+    for (key in listOf("highlights", "videos", "items", "results", "records")) {
+        root.optJSONArray(key)?.let { return it }
+    }
+    val data = root.optJSONObject("data") ?: return null
+    for (key in listOf("highlights", "videos", "items", "results", "records")) {
+        data.optJSONArray(key)?.let { return it }
+    }
+    return null
+}
+
+private fun parseCockfightHighlightsJson(body: String): List<CockfightHighlightVideo> {
+    val out = mutableListOf<CockfightHighlightVideo>()
+    try {
+        val trimmed = body.trim()
+        val arr =
+            when {
+                trimmed.startsWith("[") -> JSONArray(trimmed)
+                else -> extractCockfightHighlightsArray(JSONObject(trimmed)) ?: return emptyList()
+            }
+        for (i in 0 until arr.length()) {
+            if (out.size >= 4) break
+            val o = arr.optJSONObject(i) ?: continue
+            val url =
+                o.optString("video_url", "")
+                    .ifBlank { o.optString("url", "") }
+                    .ifBlank { o.optString("src", "") }
+                    .ifBlank { o.optString("link", "") }
+                    .trim()
+            if (url.isEmpty()) continue
+            val title =
+                o.optString("title", "").ifBlank { o.optString("name", "") }.trim()
+                    .ifBlank { "Fight ${out.size + 1}" }
+            val thumb =
+                o.optString("thumbnail_url", "")
+                    .ifBlank { o.optString("thumbnail", "") }
+                    .ifBlank { o.optString("image_url", "") }
+                    .ifBlank { o.optString("poster", "") }
+                    .trim()
+                    .ifBlank { null }
+            out.add(CockfightHighlightVideo(title, url, thumb))
+        }
+    } catch (_: Exception) { }
+    return out
+}
+
+private suspend fun fetchCockfightHighlights(): List<CockfightHighlightVideo> =
+    withContext(Dispatchers.IO) {
+        try {
+            val req =
+                Request.Builder()
+                    .url(COCKFIGHT_HIGHLIGHTS_API_URL)
+                    .header("Accept", "application/json")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || text.isBlank()) return@withContext emptyList()
+                parseCockfightHighlightsJson(text)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
 private const val PREFS_AUTH = "auth_prefs"
 private const val PREFS_AUTH_TOKEN_KEY = "access_token"
@@ -3666,6 +3750,7 @@ private suspend fun postMeronWalaBet(side: String, stake: Int): Pair<MeronWalaBe
                     put("stake", stake)
                 }
             val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            android.util.Log.d("CockfightBet", "Request body: ${json}")
             val req =
                 Request.Builder()
                     .url(GAME_MERON_WALA_BET_URL)
@@ -3676,6 +3761,7 @@ private suspend fun postMeronWalaBet(side: String, stake: Int): Pair<MeronWalaBe
                     .build()
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
+                android.util.Log.d("CockfightBet", "Response ${resp.code}: $text")
                 val errBody =
                     runCatching {
                         JSONObject(text).optString("error", "").ifBlank {
@@ -4091,25 +4177,133 @@ private fun CockfightOddsBetCard(
     }
 }
 
+/** Tall portrait card: odds on top, label on bottom (Sabong-style). */
+@Composable
+private fun CockfightPortraitLargeBetCard(
+    label: String,
+    odd: String,
+    baseColor: Color,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    cardHeight: Dp = 148.dp,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .height(cardHeight)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = baseColor,
+        border = BorderStroke(
+            width = if (selected) 3.dp else 1.dp,
+            color = if (selected) OrangePrimary else Color.White.copy(alpha = 0.28f)
+        ),
+        shadowElevation = if (selected) 8.dp else 2.dp
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(vertical = 12.dp, horizontal = 8.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "${odd}X",
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 22.sp
+            )
+            Text(
+                label,
+                color = Color.White,
+                fontWeight = FontWeight.Medium,
+                fontSize = 15.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun CockfightBetAmountChip(
+    amount: Int,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .border(
+                width = if (selected) 3.dp else 1.dp,
+                color = if (selected) OrangePrimary else Color(0xFF5C5C5C),
+                shape = CircleShape
+            )
+            .background(Color(0xFF2C2C2C))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "$amount",
+            color = Color.White,
+            fontSize = if (amount >= 1000) 10.sp else 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+/** Continuous horizontal marquee for first-deposit promo (cock fight). */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CockfightFirstDepositMarqueeBanner(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = OrangePrimary.copy(alpha = 0.95f),
+        shadowElevation = 2.dp
+    ) {
+        Text(
+            text = "  Deposit now and get ₹500 bonus on your first deposit!  " +
+                "Limited time — deposit and get ₹500 bonus on your first deposit!  " +
+                "Deposit now and get ₹500 bonus on your first deposit!  ",
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 7.dp)
+                .basicMarquee(
+                    initialDelayMillis = 400,
+                    delayMillis = 30
+                ),
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
 @Composable
 fun CockFightLiveScreen(
     onBack: () -> Unit,
     onWallet: () -> Unit,
-    onOpenProfile: () -> Unit
+    onOpenProfile: () -> Unit = {}
 ) {
     var isVideoFullscreen by remember { mutableStateOf(false) }
-    // While landscape fullscreen popup is open, only [CockFightHlsStream] inner BackHandler runs (one swipe = pop).
-    BackHandler(enabled = !isVideoFullscreen) { onBack() }
-    val roadmapPattern = remember {
+    val cockfightOdds = remember {
         listOf(
-            listOf("M", "W", "M", "D", "W", "M", "M", "W", "W", "M", "D", "M"),
-            listOf("W", "M", "W", "W", "D", "M", "W", "M", "M", "W", "M", "W"),
-            listOf("M", "M", "W", "D", "W", "W", "M", "M", "D", "W", "M", "M"),
-            listOf("W", "W", "M", "M", "W", "D", "M", "W", "M", "M", "W", "D"),
-            listOf("M", "D", "W", "M", "M", "W", "W", "M", "W", "M", "W", "M"),
-            listOf("W", "M", "M", "W", "W", "M", "D", "W", "M", "W", "M", "W")
+            CockfightOdd("Meron", "1.90", CockMeronRed),
+            CockfightOdd("Draw", "4.46", CockDrawGreen),
+            CockfightOdd("Wala", "1.92", CockWalaBlue)
         )
     }
+    var selectedCockfightOdd by remember { mutableStateOf<CockfightOdd?>(cockfightOdds.firstOrNull()) }
+    var selectedChipAmount by remember { mutableStateOf(100) }
+    val chipAmounts = remember { listOf(50, 100, 200, 300, 500, 1000, 2500, 5000) }
+    var placingCockfightBet by remember { mutableStateOf(false) }
+    val cockfightBetScope = rememberCoroutineScope()
+    val cockfightCtx = LocalContext.current
+
+    // While landscape fullscreen popup is open, only [CockFightHlsStream] inner BackHandler runs (one swipe = pop).
+    BackHandler(enabled = !isVideoFullscreen) { onBack() }
 
     var cockfightWalletText by remember { mutableStateOf("₹0") }
     var showCockfightBetHistory by remember { mutableStateOf(false) }
@@ -4117,185 +4311,268 @@ fun CockFightLiveScreen(
         val (w, _) = fetchWalletFromApi()
         cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
     }
-    Column(Modifier.fillMaxSize().background(CockDarkBg)) {
-        if (!isVideoFullscreen) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-            }
-            Text(
-                "COCK FIGHT LIVE",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                letterSpacing = 0.6.sp
-            )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
-                IconButton(onClick = onOpenProfile) {
-                    Icon(Icons.Default.Settings, contentDescription = "Profile", tint = Color.White, modifier = Modifier.size(22.dp))
-                }
-            }
-        }
-        }
-        if (!isVideoFullscreen) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = OrangePrimary.copy(alpha = 0.35f)
-        ) {
-            Text(
-                "Welcome bonus — bet ₹500 free on your first deposit!",
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                fontSize = 11.sp,
-                color = Color.Black,
-                maxLines = 2
-            )
-        }
-        }
-        LazyColumn(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(bottom = 24.dp)
-        ) {
-            item {
-                CockFightHlsStream(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(248.dp)
-                        .padding(horizontal = 16.dp)
-                        .clip(RoundedCornerShape(10.dp)),
-                    onSurfaceClick = null,
-                    usePlaybackControls = true,
-                    useHomeLocalVideo = false,
-                    useLiveLocalVideo = true,
-                    disallowPlaybackSeeking = true,
-                    odds = listOf(
-                        CockfightOdd("Meron", "1.90", CockMeronRed),
-                        CockfightOdd("Draw", "4.46", CockDrawGreen),
-                        CockfightOdd("Wala", "1.92", CockWalaBlue)
-                    ),
-                    onBackFromFullscreen = onBack,
-                    walletBalance = cockfightWalletText,
-                    onWalletBalanceClick = onWallet,
-                    onWalletBalanceAfterBet = { bal ->
-                        cockfightWalletText = formatRupeeBalanceForDisplay(bal)
-                    },
-                    onFullscreenChanged = { isVideoFullscreen = it },
-                    startFullscreen = true
-                )
-            }
+    Box(Modifier.fillMaxSize().background(CockDarkBg)) {
+        Column(Modifier.fillMaxSize()) {
             if (!isVideoFullscreen) {
-            item {
-                Box(
-                    modifier = Modifier
+                Row(
+                    Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .height(52.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(CockMeronRed.copy(alpha = 0.95f), CockWalaBlue.copy(alpha = 0.95f))
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    }
                     Text(
-                        "Meron  VS  Wala",
+                        "COCK FIGHT LIVE",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
+                        fontSize = 15.sp,
+                        letterSpacing = 0.6.sp
                     )
+                    WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
                 }
             }
-            }
-            if (!isVideoFullscreen) {
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-                ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            RoadmapLegendDot(CockMeronRed, "Meron")
-                            RoadmapLegendDot(CockDrawGreen, "Draw")
-                            RoadmapLegendDot(CockWalaBlue, "Wala")
-                            RoadmapLegendDot(Color.Gray, "Cancel")
+            LazyColumn(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(bottom = 8.dp)
+            ) {
+                if (!isVideoFullscreen) {
+                    item(key = "cockfight_deposit_marquee") {
+                        Column(Modifier.padding(horizontal = 16.dp)) {
+                            CockfightFirstDepositMarqueeBanner()
+                            Spacer(Modifier.height(8.dp))
                         }
-                        Spacer(Modifier.height(10.dp))
-                        roadmapPattern.forEach { row ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                row.forEach { cell ->
-                                    val c = when (cell) {
-                                        "M" -> CockMeronRed
-                                        "W" -> CockWalaBlue
-                                        "D" -> CockDrawGreen
-                                        else -> Color.Gray
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(18.dp)
-                                            .clip(CircleShape)
-                                            .background(c)
+                    }
+                }
+                item {
+                    CockFightHlsStream(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(248.dp)
+                            .padding(horizontal = 16.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                        onSurfaceClick = null,
+                        usePlaybackControls = true,
+                        useHomeLocalVideo = false,
+                        useLiveLocalVideo = true,
+                        disallowPlaybackSeeking = true,
+                        odds = cockfightOdds,
+                        onBackFromFullscreen = onBack,
+                        walletBalance = cockfightWalletText,
+                        onWalletBalanceClick = onWallet,
+                        onWalletBalanceAfterBet = { bal ->
+                            cockfightWalletText = formatRupeeBalanceForDisplay(bal)
+                        },
+                        onFullscreenChanged = { isVideoFullscreen = it },
+                        startFullscreen = false
+                    )
+                }
+                if (!isVideoFullscreen) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .padding(top = 12.dp, bottom = 10.dp)
+                                .height(52.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(
+                                            CockMeronRed.copy(alpha = 0.95f),
+                                            Color(0xFFFF6F00).copy(alpha = 0.85f),
+                                            CockWalaBlue.copy(alpha = 0.95f)
+                                        )
                                     )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "Meron  VS  Wala",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 20.sp
+                            )
+                        }
+                    }
+                }
+                if (!isVideoFullscreen) {
+                    item(key = "cockfight_bet_cards") {
+                        val meronWalaHeight = 180.dp
+                        val drawHeight = 135.dp // 3/4 of Meron / Wala height
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .padding(top = 22.dp, bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            cockfightOdds.forEachIndexed { index, o ->
+                                val h = when (index) {
+                                    1 -> drawHeight
+                                    else -> meronWalaHeight
                                 }
+                                CockfightPortraitLargeBetCard(
+                                    label = o.label,
+                                    odd = o.odd,
+                                    baseColor = o.color,
+                                    selected = selectedCockfightOdd?.label == o.label,
+                                    modifier = Modifier.weight(1f),
+                                    cardHeight = h,
+                                    onClick = { selectedCockfightOdd = o }
+                                )
                             }
-                            Spacer(Modifier.height(4.dp))
                         }
                     }
                 }
             }
-            }
+
             if (!isVideoFullscreen) {
-            item {
-                OutlinedButton(
-                    onClick = { showCockfightBetHistory = true },
-                    modifier = Modifier
+                Column(
+                    Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, OrangePrimary)
+                        .navigationBarsPadding()
+                        .padding(bottom = 8.dp)
                 ) {
-                    Icon(Icons.Default.History, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("My Recent Bets", color = OrangePrimary, fontWeight = FontWeight.Bold)
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(chipAmounts.size) { idx ->
+                            val amt = chipAmounts[idx]
+                            CockfightBetAmountChip(
+                                amount = amt,
+                                selected = selectedChipAmount == amt,
+                                onClick = { selectedChipAmount = amt }
+                            )
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xFFE8E8E8),
+                        shadowElevation = 2.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+                                IconButton(
+                                    onClick = onOpenProfile,
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Settings,
+                                        contentDescription = "Settings",
+                                        tint = Color(0xFF424242),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { showCockfightBetHistory = true },
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.History,
+                                        contentDescription = "Bet history",
+                                        tint = Color(0xFF424242),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = {
+                                    val pick = selectedCockfightOdd ?: run {
+                                        Toast.makeText(cockfightCtx, "Pick Meron, Draw, or Wala", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    val side = cockfightLabelToSideApi(pick.label)
+                                    if (side == null) {
+                                        Toast.makeText(cockfightCtx, "Invalid side", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    cockfightBetScope.launch {
+                                        placingCockfightBet = true
+                                        val (ok, err) = postMeronWalaBet(side, selectedChipAmount)
+                                        placingCockfightBet = false
+                                        if (ok != null) {
+                                            cockfightWalletText = formatRupeeBalanceForDisplay(ok.walletBalance)
+                                            Toast.makeText(
+                                                cockfightCtx,
+                                                "Bet placed: ${pick.label} ₹$selectedChipAmount",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else {
+                                            Toast.makeText(
+                                                cockfightCtx,
+                                                err ?: "Could not place bet",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                enabled = !placingCockfightBet && selectedCockfightOdd != null,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 6.dp)
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                            ) {
+                                if (placingCockfightBet) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        color = Color.White,
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "Place Bet…",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = onWallet,
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.AccountBalanceWallet,
+                                    contentDescription = "Wallet",
+                                    tint = Color(0xFF424242),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
-            }
         }
-    }
 
-    if (showCockfightBetHistory) {
-        CockfightBetHistoryPanel(onDismiss = { showCockfightBetHistory = false })
-    }
-}
-
-@Composable
-private fun RoadmapLegendDot(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Text(label, fontSize = 10.sp, color = Color.DarkGray)
+        if (showCockfightBetHistory) {
+            CockfightBetHistoryPanel(onDismiss = { showCockfightBetHistory = false })
+        }
     }
 }
 
@@ -4359,6 +4636,91 @@ private suspend fun fetchGundataBetHistory(): Pair<List<GundataBetRecord>, Strin
             Pair(emptyList(), e.message ?: "Network error")
         }
     }
+
+@Composable
+private fun GundataRecentRoundsPanel(
+    onDismiss: () -> Unit,
+    resultStrip: List<Pair<Int, Int>>,
+    faceEmoji: List<String>
+) {
+    val hScroll = rememberScrollState()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.70f))
+            .clickable(
+                indication = null,
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            ) { onDismiss() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.52f)
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                ) { },
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = Color(0xFFFAFAFA)
+        ) {
+            Column(Modifier.fillMaxSize().padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Recent results",
+                        color = Color(0xFF333333),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF666666))
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Last rounds — number then dice outcome",
+                    color = Color(0xFF888888),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(hScroll)
+                        .background(Color(0xFFE8E8E8), RoundedCornerShape(10.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        resultStrip.forEach { (round, _) ->
+                            Text(
+                                round.toString(),
+                                color = Color(0xFF444444),
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(28.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        resultStrip.forEach { (_, face) ->
+                            Text(
+                                faceEmoji.getOrNull(face - 1) ?: "?",
+                                fontSize = 28.sp,
+                                modifier = Modifier.width(28.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun GundataBetHistoryPanel(onDismiss: () -> Unit) {
@@ -4501,6 +4863,136 @@ private fun GundataBetHistoryRow(bet: GundataBetRecord) {
     }
 }
 
+/** Small region pills under the video: selected = orange + top caret; unselected = light grey (reference UI). */
+@Composable
+private fun GunduRegionTabPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier
+                .height(5.dp)
+                .width(20.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            if (selected) {
+                Canvas(Modifier.size(8.dp, 4.dp)) {
+                    val path =
+                        Path().apply {
+                            moveTo(size.width * 0.5f, 0f)
+                            lineTo(0f, size.height)
+                            lineTo(size.width, size.height)
+                            close()
+                        }
+                    drawPath(path = path, color = OrangePrimary)
+                }
+            }
+        }
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(6.dp),
+            color = if (selected) OrangePrimary else Color(0xFFE1E1E1),
+            border = if (selected) null else BorderStroke(0.5.dp, Color(0xFFD0D0D0))
+        ) {
+            Text(
+                label,
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
+                color = if (selected) Color.White else Color(0xFF1A1A1A),
+                fontSize = 13.5.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/** Top bar for Gundata LIVE: centered title + LIVE pill, tile-style back, wallet; white bar + orange accent line. */
+@Composable
+private fun GundataLiveTopBar(
+    walletText: String,
+    onBack: () -> Unit,
+    onWallet: () -> Unit
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color.White,
+            shadowElevation = 1.dp
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp, horizontal = 8.dp)
+            ) {
+                Surface(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFFEFEFEF),
+                    border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+                ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color(0xFF2C2C2C),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        "Gundata",
+                        color = Color(0xFF1C1C1C),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 19.sp
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        color = OrangePrimary,
+                        shape = RoundedCornerShape(5.dp)
+                    ) {
+                        Text(
+                            "LIVE",
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+                Box(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(start = 4.dp)
+                ) {
+                    WalletBalanceChip(
+                        onClick = onWallet,
+                        balanceText = walletText,
+                        spacerBetweenIconAndText = 6.dp
+                    )
+                }
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .background(OrangePrimary)
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GundataLiveScreen(
     onBack: () -> Unit,
@@ -4509,55 +5001,43 @@ fun GundataLiveScreen(
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
-    var isMaximized by remember { mutableStateOf(false) }
-    var gundataBetSelection by remember { mutableStateOf<Int?>(null) } // 1-6
+    // Per face (1–6): total ₹ stacked before PLACE BET; each tap adds the selected chip value.
+    var gunduStakes by remember { mutableStateOf(mapOf<Int, Int>()) }
     var showGundataBetHistory by remember { mutableStateOf(false) }
+    var showGundataRecentRounds by remember { mutableStateOf(false) }
     var walletText by remember { mutableStateOf("₹0") }
+    var regionTab by remember { mutableStateOf(0) }
+    var selectedChip by remember { mutableStateOf(100) }
+    var gunduVideoFullscreen by remember { mutableStateOf(false) }
+    // Width/height of decoded video; black frame uses this so it matches the picture (replaces fixed 272dp).
+    var gunduVideoAspect by remember { mutableStateOf(16f / 9f) }
+    var placing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val chipOptions = listOf(100, 200, 300, 500, 800, 1000)
+    val chipRowScroll = rememberScrollState()
+    val bodyScroll = rememberScrollState()
+    val resultsStripScroll = rememberScrollState()
+    // Demo history strip (round index → face); replace with API later
+    val resultStrip = remember {
+        listOf(9 to 3, 10 to 5, 11 to 1, 12 to 6, 13 to 2, 14 to 4, 15 to 1, 16 to 3)
+    }
+    val faceEmoji = listOf("⚀", "⚁", "⚂", "⚃", "⚄", "⚅")
 
     LaunchedEffect(Unit) {
         val (w, _) = fetchWalletFromApi()
         walletText = formatRupeeBalanceForDisplay(w?.balance)
     }
-
-    // Orientation: landscape when maximized, portrait when minimized
-    DisposableEffect(isMaximized) {
-        if (isMaximized) {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                activity?.window?.insetsController?.let {
-                    it.hide(android.view.WindowInsets.Type.systemBars())
-                    it.systemBarsBehavior =
-                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                }
+    // Fullscreen video = landscape; main Gundu UI = portrait. Reset on leave screen.
+    LaunchedEffect(gunduVideoFullscreen) {
+        activity?.requestedOrientation =
+            if (gunduVideoFullscreen) {
+                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             } else {
-                @Suppress("DEPRECATION")
-                activity?.window?.decorView?.systemUiVisibility = (
-                    android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                )
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             }
-        } else {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                activity?.window?.insetsController?.show(android.view.WindowInsets.Type.systemBars())
-            } else {
-                @Suppress("DEPRECATION")
-                activity?.window?.decorView?.systemUiVisibility =
-                    android.view.View.SYSTEM_UI_FLAG_VISIBLE
-            }
-        }
-        onDispose {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                activity?.window?.insetsController?.show(android.view.WindowInsets.Type.systemBars())
-            } else {
-                @Suppress("DEPRECATION")
-                activity?.window?.decorView?.systemUiVisibility =
-                    android.view.View.SYSTEM_UI_FLAG_VISIBLE
-            }
-        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
     }
 
     val exoPlayer = remember {
@@ -4570,257 +5050,484 @@ fun GundataLiveScreen(
             playWhenReady = true
         }
     }
-    DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
+    DisposableEffect(exoPlayer) {
+        val listener =
+            object : androidx.media3.common.Player.Listener {
+                override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                    val w = videoSize.width
+                    val h = videoSize.height
+                    if (w > 0 && h > 0) {
+                        gunduVideoAspect = w.toFloat() / h.toFloat()
+                    }
+                }
+            }
+        exoPlayer.addListener(listener)
+        val vs = exoPlayer.videoSize
+        if (vs.width > 0 && vs.height > 0) {
+            gunduVideoAspect = vs.width.toFloat() / vs.height.toFloat()
+        }
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
+        }
+    }
 
     BackHandler {
         when {
+            gunduVideoFullscreen -> gunduVideoFullscreen = false
+            showGundataRecentRounds -> showGundataRecentRounds = false
             showGundataBetHistory -> showGundataBetHistory = false
-            isMaximized -> isMaximized = false
             else -> onBack()
         }
     }
 
     val diceItems = remember {
         listOf(
-            Triple(1, "ONE", "⚀"),
-            Triple(2, "TWO", "⚁"),
-            Triple(3, "THREE", "⚂"),
-            Triple(4, "FOUR", "⚃"),
-            Triple(5, "FIVE", "⚄"),
-            Triple(6, "SIX", "⚅")
+            Triple(1, "One", "⚀"),
+            Triple(2, "Two", "⚁"),
+            Triple(3, "Three", "⚂"),
+            Triple(4, "Four", "⚃"),
+            Triple(5, "Five", "⚄"),
+            Triple(6, "Six", "⚅")
         )
     }
 
-    if (isMaximized) {
-        // ── MAXIMIZED: full-screen landscape video ──────────────────────────
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            AndroidView(
-                factory = {
-                    androidx.media3.ui.PlayerView(it).apply {
-                        player = exoPlayer
-                        useController = false
-                        layoutParams = android.view.ViewGroup.LayoutParams(
-                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
+    val gunduHasStakes = gunduStakes.values.any { it > 0 }
+    val canPlace = gunduHasStakes && !placing
+    val pageTopBg = Color(0xFFFAFAFA)
+    val marbleBg = Brush.verticalGradient(
+        colors = listOf(Color(0xFFF2F2F2), Color(0xFFE6E6E6), Color(0xFFEDEDED))
+    )
+
+    Box(Modifier.fillMaxSize().background(pageTopBg)) {
+        Column(Modifier.fillMaxSize()) {
+            GundataLiveTopBar(
+                walletText = walletText,
+                onBack = onBack,
+                onWallet = onWallet
             )
-            // LIVE badge — top center
+
+            // Scrolling first-deposit promo (above video)
             Surface(
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = Color.Black.copy(alpha = 0.55f)
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFFFFF8E1),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFE0B2))
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    LiveStreamBlinkingDot()
-                    Text("LIVE", color = Color(0xFFE53935), fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                }
+                Text(
+                    text = "  Deposit ₹500 and get ₹500 bonus on your first deposit!  " +
+                        "Your first-deposit bonus — limited time.  " +
+                        "Deposit ₹500 and get ₹500 bonus on your first deposit!  ",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp, horizontal = 0.dp)
+                        .basicMarquee(
+                            initialDelayMillis = 800,
+                            delayMillis = 30
+                        ),
+                    color = Color(0xFF8B4513),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
             }
-            // Minimize button — top left
-            IconButton(
-                onClick = { isMaximized = false },
-                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
-            ) {
-                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
-                    Icon(
-                            imageVector = Icons.Default.FullscreenExit,
-                            contentDescription = "Minimise",
-                        tint = Color.White,
-                        modifier = Modifier.padding(6.dp).size(22.dp)
+
+            // Black dashboard: video + Live badge, or black placeholder when maximized; maximize opens fullscreen player
+            if (!gunduVideoFullscreen) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(gunduVideoAspect)
+                        .background(Color.Black)
+                ) {
+                    AndroidView(
+                        factory = {
+                            androidx.media3.ui.PlayerView(it).apply {
+                                player = exoPlayer
+                                useController = false
+                                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                layoutParams = android.view.ViewGroup.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
+                        },
+                        onRelease = { (it as? androidx.media3.ui.PlayerView)?.player = null },
+                        update = { (it as? androidx.media3.ui.PlayerView)?.player = exoPlayer },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Row(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .background(Color(0xCC000000), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .background(Color(0xFFFF3B30), CircleShape)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Live", color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    IconButton(
+                        onClick = { gunduVideoFullscreen = true },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                    ) {
+                        Surface(shape = CircleShape, color = Color.White, shadowElevation = 2.dp) {
+                            Icon(
+                                Icons.Default.Fullscreen,
+                                contentDescription = "Fullscreen",
+                                tint = Color.Black,
+                                modifier = Modifier.padding(8.dp).size(22.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(gunduVideoAspect)
+                        .background(Color.Black)
+                ) {
+                    Text(
+                        "Playing fullscreen",
+                        color = Color(0xFF888888),
+                        fontSize = 12.sp,
+                        modifier = Modifier.align(Alignment.Center)
                     )
                 }
             }
-            // Back button — top right
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
-            ) {
-                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.padding(6.dp).size(22.dp))
-                }
-            }
-            // History button — top right, just below back
-            IconButton(
-                onClick = { showGundataBetHistory = true },
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 64.dp, end = 8.dp)
-            ) {
-                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
-                    Icon(Icons.Default.History, contentDescription = "My Bets", tint = Color.White, modifier = Modifier.padding(6.dp).size(22.dp))
-                }
-            }
-            // History panel overlay in fullscreen
-            if (showGundataBetHistory) {
-                GundataBetHistoryPanel(onDismiss = { showGundataBetHistory = false })
-            }
-        }
-    } else {
-        // ── MINIMISED: portrait — video at top, number bets below ───────────
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(Color(0xFF0F0F0F))
-        ) {
-            // Top bar
+
+            // Live / Virtual pills (flush under video — no top gap)
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                }
-                Text("GUNDUATA LIVE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 0.6.sp)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    WalletBalanceChip(onClick = onWallet, balanceText = walletText, spacerBetweenIconAndText = 6.dp)
-                    IconButton(onClick = { showGundataBetHistory = true }) {
-                        Icon(Icons.Default.History, contentDescription = "My Bets", tint = Color.White, modifier = Modifier.size(22.dp))
-                    }
-                }
-            }
-
-            // Video box with maximize button overlay
-            Box(
-                modifier = Modifier
+                Modifier
                     .fillMaxWidth()
-                    .height(220.dp)
-                    .background(Color.Black)
+                    .background(pageTopBg)
+                    .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                AndroidView(
-                    factory = {
-                        androidx.media3.ui.PlayerView(it).apply {
-                            player = exoPlayer
-                            useController = false
-                            layoutParams = android.view.ViewGroup.LayoutParams(
-                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                                android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-                // LIVE badge
-                Surface(
-                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color.Black.copy(alpha = 0.6f)
-                ) {
-                    Row(
-                        Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        LiveStreamBlinkingDot()
-                        Text("LIVE", color = Color(0xFFE53935), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-                // Maximise button — bottom right of video
-                IconButton(
-                    onClick = { isMaximized = true },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)
-                ) {
-                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.55f)) {
-                        Icon(
-                            imageVector = Icons.Default.Fullscreen,
-                            contentDescription = "Maximise",
-                            tint = Color.White,
-                            modifier = Modifier.padding(6.dp).size(20.dp)
-                        )
-                    }
+                listOf("Live" to 0, "Virtual" to 1).forEachIndexed { i, (label, idx) ->
+                    if (i > 0) Spacer(Modifier.width(6.dp))
+                    GunduRegionTabPill(
+                        label = label,
+                        selected = regionTab == idx,
+                        onClick = { regionTab = idx }
+                    )
                 }
             }
 
-            // Number betting section
+            // Marbled area: grid + chips + action bar, then last-round results below
             Column(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .background(marbleBg)
+                    .verticalScroll(bodyScroll)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
             ) {
-                Text(
-                    "Place Your Bet",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-                // 6 number cards in a 3×2 grid
                 for (row in 0..1) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (col in 0..2) {
                             val idx = row * 3 + col
                             val (num, word, emoji) = diceItems[idx]
+                            val stakeOnBox = gunduStakes[num] ?: 0
+                            val chipShow = if (stakeOnBox > 0) stakeOnBox else null
                             GundataDiceCard(
                                 num = num,
                                 word = word,
                                 emoji = emoji,
-                                selected = gundataBetSelection == num,
-                                onClick = { gundataBetSelection = num },
+                                selected = stakeOnBox > 0,
+                                chipOnFace = chipShow,
+                                onClick = {
+                                    val next = stakeOnBox + selectedChip
+                                    gunduStakes = gunduStakes + (num to next)
+                                },
                                 modifier = Modifier.weight(1f)
                             )
                         }
                     }
-                    if (row == 0) Spacer(Modifier.height(10.dp))
+                    if (row == 0) Spacer(Modifier.height(6.dp))
                 }
-
-                // Place bet button — visible when a number is selected
-                if (gundataBetSelection != null) {
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = { /* bet slip shown below */ },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
-                    ) {
-                        Text("Bet on ${gundataBetSelection}", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(chipRowScroll),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    chipOptions.forEach { c ->
+                        val sel = selectedChip == c
+                        Surface(
+                            onClick = { selectedChip = c },
+                            shape = CircleShape,
+                            color = if (sel) OrangePrimary else Color(0xFF3A3A3A),
+                            border = if (sel) BorderStroke(2.dp, Color.White.copy(alpha = 0.5f)) else BorderStroke(1.dp, Color(0xFF2A2A2A))
+                        ) {
+                            Text(
+                                c.toString(),
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                                color = if (sel) Color.White else Color(0xFFBDBDBD),
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 13.sp
+                            )
+                        }
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { showGundataBetHistory = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, OrangePrimary)
+                // Settings / recent / Please wait / PLACE BET / wallet (above last-round results)
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFEFEFEF), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 10.dp)
+                        .padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    Icon(Icons.Default.History, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("My Recent Bets", color = OrangePrimary, fontWeight = FontWeight.Bold)
+                    GundataSquareIconButton(icon = Icons.Default.Settings, onClick = onOpenProfile)
+                    GundataSquareIconButton(
+                        icon = Icons.Filled.Notes,
+                        onClick = {
+                            showGundataBetHistory = false
+                            showGundataRecentRounds = true
+                        }
+                    )
+                    GundataSquareIconButton(
+                        icon = Icons.Default.Assignment,
+                        onClick = {
+                            showGundataRecentRounds = false
+                            showGundataBetHistory = true
+                        }
+                    )
+                    val gunduBetHasSelection = gunduHasStakes
+                    Button(
+                        onClick = {
+                            if (placing) return@Button
+                            val lineItems =
+                                (1..6)
+                                    .mapNotNull { n -> gunduStakes[n]?.let { a -> if (a > 0) n to a else null } }
+                            if (lineItems.isEmpty()) return@Button
+                            scope.launch {
+                                placing = true
+                                var remaining = gunduStakes.toMap()
+                                var lastGoodBalance: String? = null
+                                var failedErr: String? = null
+                                for ((n, amount) in lineItems.sortedBy { it.first }) {
+                                    val (result, err) = postGundataBet(n, amount)
+                                    if (result != null) {
+                                        lastGoodBalance = result.walletBalance
+                                        remaining = remaining - n
+                                    } else {
+                                        failedErr = err
+                                        break
+                                    }
+                                }
+                                gunduStakes = remaining
+                                placing = false
+                                when {
+                                    failedErr != null -> {
+                                        lastGoodBalance?.let {
+                                            walletText = formatRupeeBalanceForDisplay(it.toBigDecimalOrNull()?.toString())
+                                        }
+                                        Toast.makeText(context, failedErr, Toast.LENGTH_LONG).show()
+                                    }
+                                    else -> {
+                                        lastGoodBalance?.let {
+                                            walletText = formatRupeeBalanceForDisplay(it.toBigDecimalOrNull()?.toString())
+                                        }
+                                        Toast.makeText(
+                                            context,
+                                            if (lineItems.size == 1) "Bet placed" else "Bets placed",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        },
+                        enabled = canPlace,
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .height(48.dp)
+                            .padding(horizontal = 4.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OrangePrimary,
+                            contentColor = Color.White,
+                            disabledContainerColor = if (gunduBetHasSelection) OrangePrimary else Color(0xFFCFCFCF),
+                            disabledContentColor = if (gunduBetHasSelection) Color.White else Color(0xFF8A8A8A)
+                        )
+                    ) {
+                        if (placing) {
+                            CircularProgressIndicator(
+                                Modifier.size(20.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                "PLACE BET",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (gunduBetHasSelection) Color.White else Color(0xFF8A8A8A)
+                            )
+                        }
+                    }
+                    GundataSquareIconButton(icon = Icons.Default.AccountBalanceWallet, onClick = onWallet)
+                }
+                // Last round results — below the action bar
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "Last round results",
+                    color = Color(0xFF666666),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFE0E0E0), RoundedCornerShape(8.dp))
+                        .horizontalScroll(resultsStripScroll)
+                        .padding(vertical = 10.dp, horizontal = 8.dp)
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        resultStrip.forEach { (round, _) ->
+                            Text(
+                                round.toString(),
+                                color = Color(0xFF555555),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.width(26.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        resultStrip.forEach { (_, face) ->
+                            Text(
+                                faceEmoji.getOrNull(face - 1) ?: "?",
+                                fontSize = 20.sp,
+                                modifier = Modifier.width(26.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // History panel overlay in portrait
+        if (gunduVideoFullscreen) {
+            Dialog(
+                onDismissRequest = { gunduVideoFullscreen = false },
+                properties =
+                    DialogProperties(
+                        usePlatformDefaultWidth = false,
+                        decorFitsSystemWindows = false,
+                        dismissOnBackPress = true
+                    )
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                ) {
+                    AndroidView(
+                        factory = {
+                            androidx.media3.ui.PlayerView(it).apply {
+                                player = exoPlayer
+                                useController = false
+                                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                layoutParams = android.view.ViewGroup.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
+                        },
+                        onRelease = { (it as? androidx.media3.ui.PlayerView)?.player = null },
+                        update = { (it as? androidx.media3.ui.PlayerView)?.player = exoPlayer },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    IconButton(
+                        onClick = { gunduVideoFullscreen = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Exit fullscreen",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
+        }
+        if (showGundataRecentRounds) {
+            GundataRecentRoundsPanel(
+                onDismiss = { showGundataRecentRounds = false },
+                resultStrip = resultStrip,
+                faceEmoji = faceEmoji
+            )
+        }
         if (showGundataBetHistory) {
             GundataBetHistoryPanel(onDismiss = { showGundataBetHistory = false })
         }
+    }
+}
 
-        // Bet slip bottom sheet when a number is selected
-        gundataBetSelection?.let { selectedNum ->
-            FullscreenBetSlip(
-                selection = CockfightBetSelection(
-                    label = "Number $selectedNum",
-                    odd = "6.00",
-                    color = OrangePrimary
-                ),
-                onDismiss = { gundataBetSelection = null },
-                onPlaceBet = { stake ->
-                    val (result, err) = postGundataBet(selectedNum, stake)
-                    if (result != null) {
-                        walletText = formatRupeeBalanceForDisplay(result.walletBalance.toBigDecimalOrNull()?.toString())
-                        gundataBetSelection = null
+/** Classic 1–6 pip layout on a 3×3 grid (dice like the reference). */
+@Composable
+private fun GundataDicePipFace(
+    value: Int,
+    modifier: Modifier = Modifier
+) {
+    // Light grey pips; diameter kept bold on the off-white face.
+    val pip = Color(0xFFC2C2C2)
+    val pipDiameter = 11.dp
+    val pips9: BooleanArray = when (value.coerceIn(1, 6)) {
+        1 -> booleanArrayOf(false, false, false, false, true, false, false, false, false)
+        2 -> booleanArrayOf(true, false, false, false, false, false, false, false, true)
+        3 -> booleanArrayOf(true, false, false, false, true, false, false, false, true)
+        4 -> booleanArrayOf(true, false, true, false, false, false, true, false, true)
+        5 -> booleanArrayOf(true, false, true, false, true, false, true, false, true)
+        else -> booleanArrayOf(true, false, true, true, false, true, true, false, true) // 6
+    }
+    Box(
+        modifier
+            .aspectRatio(1f)
+            .background(Color(0xFFF7F7F7), RoundedCornerShape(10.dp))
+            .border(1.dp, Color(0xFFE0E0E0), RoundedCornerShape(8.dp))
+            .padding(3.dp)
+    ) {
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
+            for (r in 0..2) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    for (c in 0..2) {
+                        val on = pips9[r * 3 + c]
+                        Box(
+                            Modifier.weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (on) {
+                                Box(
+                                    Modifier
+                                        .size(pipDiameter)
+                                        .background(pip, CircleShape)
+                                )
+                            }
+                        }
                     }
-                    err
                 }
-            )
+            }
         }
     }
 }
@@ -4829,31 +5536,86 @@ fun GundataLiveScreen(
 private fun GundataDiceCard(
     num: Int,
     word: String,
-    emoji: String,
+    @Suppress("UNUSED_PARAMETER") emoji: String,
     selected: Boolean,
+    chipOnFace: Int? = null,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.height(102.dp).clickable { onClick() },
-        shape = RoundedCornerShape(12.dp),
-        color = if (selected) OrangePrimary.copy(alpha = 0.35f) else Color.White,
+        modifier = modifier
+            .height(132.dp)
+            .clickable { onClick() },
+        shape = RoundedCornerShape(10.dp),
+        color = Color.White,
         border = BorderStroke(
-            width = if (selected) 2.dp else 1.dp,
-            color = if (selected) OrangePrimary else Color.LightGray
-        ),
-        shadowElevation = if (selected) 2.dp else 1.dp
+            width = if (selected) 2.5.dp else 1.dp,
+            color = if (selected) OrangePrimary else Color(0xFFDDDDDD)
+        )
     ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(8.dp),
+                .padding(6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("$num", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
-            Text(emoji, fontSize = 26.sp, textAlign = TextAlign.Center)
-            Text(word, fontSize = 11.sp, color = Color.DarkGray)
+            Text(
+                num.toString(),
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = Color(0xFF9E9E9E)
+            )
+            Box(
+                Modifier
+                    .height(64.dp)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                if (chipOnFace != null) {
+                    // Stake shown: no pip dots — only the amount.
+                    Box(
+                        Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFF5F5F5),
+                            border = BorderStroke(1.dp, Color(0xFFE8E8E8)),
+                            shadowElevation = 1.dp
+                        ) {
+                            val stakeFont =
+                                when {
+                                    chipOnFace >= 10_000 -> 10.sp
+                                    chipOnFace >= 1_000 -> 12.sp
+                                    chipOnFace >= 100 -> 14.sp
+                                    else -> 16.sp
+                                }
+                            Text(
+                                chipOnFace.toString(),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = stakeFont,
+                                color = Color(0xFF1A1A1A),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                } else {
+                    GundataDicePipFace(
+                        value = num,
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .aspectRatio(1f)
+                    )
+                }
+            }
+            Text(
+                word,
+                fontSize = 11.sp,
+                color = Color(0xFF333333),
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -8018,24 +8780,28 @@ fun HomeScreen(
     var liveEnabled by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
     var walletBalanceText by remember { mutableStateOf("₹0") }
+    var cockfightHighlights by remember { mutableStateOf<List<CockfightHighlightVideo>>(emptyList()) }
+    var playingCockfightHighlight by remember { mutableStateOf<CockfightHighlightVideo?>(null) }
     LaunchedEffect(Unit) {
         val (w, _) = fetchWalletFromApi()
         walletBalanceText = formatRupeeBalanceForDisplay(w?.balance)
     }
-    Column(modifier = Modifier.fillMaxSize()) {
-        TopHeader(
-            onDicePlayClick = onOpenGundata,
-            onCricketClick = onOpenCricket,
-            onCockfightClick = onOpenCockfight,
-            onWalletClick = onWalletClick,
-            walletBalanceText = walletBalanceText
-        )
-        LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFFF5F5F5)),
-        state = listState
-    ) {
+    LaunchedEffect(Unit) { cockfightHighlights = fetchCockfightHighlights() }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopHeader(
+                onDicePlayClick = onOpenGundata,
+                onCricketClick = onOpenCricket,
+                onCockfightClick = onOpenCockfight,
+                onWalletClick = onWalletClick,
+                walletBalanceText = walletBalanceText
+            )
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFF5F5F5)),
+                state = listState
+            ) {
         item(key = "search_bar", contentType = "search_bar") {
             var searchQuery by remember { mutableStateOf("") }
             Surface(
@@ -8077,7 +8843,9 @@ fun HomeScreen(
                 }
             }
         }
-        item(key = "banner", contentType = "banner") { BannerCarousel(homeListState = listState) }
+        item(key = "banner", contentType = "banner") {
+            BannerCarousel(homeListState = listState, onGundataClick = onOpenGundata)
+        }
         item(key = "popular_games", contentType = "games") {
             PopularGamesSection(
                 onGundataClick = onOpenGundata,
@@ -8110,9 +8878,25 @@ fun HomeScreen(
                 }
             }
         }
+        if (cockfightHighlights.isNotEmpty()) {
+            item(key = "cockfight_highlights", contentType = "cockfight_highlights") {
+                CockfightHighlightsGridSection(
+                    videos = cockfightHighlights,
+                    onPlay = { playingCockfightHighlight = it }
+                )
+            }
+        }
         item(key = "bottom_spacer", contentType = "spacer") { Spacer(modifier = Modifier.height(16.dp)) }
+            }
+        }
+        playingCockfightHighlight?.let { h ->
+            CockfightHighlightVideoDialog(
+                videoUrl = h.videoUrl,
+                title = h.title,
+                onDismiss = { playingCockfightHighlight = null }
+            )
+        }
     }
-    } // end Column
 }
 
 @Composable
@@ -8154,11 +8938,12 @@ fun TopHeader(
     onWalletClick: () -> Unit = {},
     walletBalanceText: String = "₹0"
 ) {
+    Column(Modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White)
-            .padding(start = 0.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            .background(Color(0xFFFAFAFA))
+            .padding(start = 0.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -8238,6 +9023,8 @@ fun TopHeader(
             }
         }
     }
+    Divider(color = Color(0xFFEBEBEB), thickness = 1.dp)
+    }
 }
 
 @Composable
@@ -8265,7 +9052,10 @@ fun HeaderIconItem(label: String, icon: ImageVector? = null, imageRes: Int? = nu
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BannerCarousel(homeListState: LazyListState) {
+fun BannerCarousel(
+    homeListState: LazyListState,
+    onGundataClick: () -> Unit = {}
+) {
     val totalBanners = 1
     val rowState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = rowState)
@@ -8294,10 +9084,20 @@ fun BannerCarousel(homeListState: LazyListState) {
             flingBehavior = snapFling,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Slide 0: Gundu banner image
+            // Slide 0: Gundu Ata banner — opens Gundu Ata game
             item(key = "gundu") {
-                Box(modifier = Modifier.fillParentMaxWidth().fillMaxHeight()) {
-                    DrawableImage(R.drawable.banner_gundu, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                Box(
+                    modifier = Modifier
+                        .fillParentMaxWidth()
+                        .fillMaxHeight()
+                        .clickable { onGundataClick() }
+                ) {
+                    DrawableImage(
+                        R.drawable.banner_gundu,
+                        contentDescription = "Gundu Ata",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                 }
             }
         }
@@ -8676,27 +9476,34 @@ private fun CockFightHlsStream(
                     }
                 }
 
-                // LIVE badge — centered overlay at the top of the video
-                Surface(
+                // Scrolling deposit bonus (below top bar) + LIVE badge
+                Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 12.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    color = Color.Black.copy(alpha = 0.55f)
+                        .fillMaxWidth()
+                        .padding(top = 48.dp, start = 8.dp, end = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    CockfightFirstDepositMarqueeBanner()
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.Black.copy(alpha = 0.55f)
                     ) {
-                        LiveStreamBlinkingDot()
-                        Text(
-                            "LIVE",
-                            color = Color(0xFFE53935),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            LiveStreamBlinkingDot()
+                            Text(
+                                "LIVE",
+                                color = Color(0xFFE53935),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp
+                            )
+                        }
                     }
                 }
 
@@ -8795,6 +9602,182 @@ private fun CockFightHlsStream(
                 ) {
                     Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.45f)) {
                         Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CockfightHighlightVideoDialog(videoUrl: String, title: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val player = remember(videoUrl) {
+        androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
+            setMediaItem(androidx.media3.common.MediaItem.fromUri(videoUrl))
+            repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(player) {
+        onDispose { player.release() }
+    }
+    BackHandler { onDismiss() }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            AndroidView(
+                factory = {
+                    androidx.media3.ui.PlayerView(it).apply {
+                        this.player = player
+                        useController = true
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+            }
+            Text(
+                text = title,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(16.dp),
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+@Composable
+private fun CockfightHighlightThumbnailCard(
+    video: CockfightHighlightVideo,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val ctx = LocalContext.current
+    Card(
+        modifier = modifier
+            .height(132.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (!video.thumbnailUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(ctx)
+                        .data(video.thumbnailUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = video.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color(0xFF6A1B9A), Color(0xFFB71C1C))
+                            )
+                        )
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.22f))
+            )
+            Icon(
+                imageVector = Icons.Default.PlayCircleFilled,
+                contentDescription = "Play",
+                modifier = Modifier.align(Alignment.Center).size(44.dp),
+                tint = Color.White.copy(alpha = 0.95f)
+            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    video.title,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2
+                )
+                Text(
+                    "Rooster fight replay",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 10.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CockfightHighlightsGridSection(
+    videos: List<CockfightHighlightVideo>,
+    onPlay: (CockfightHighlightVideo) -> Unit
+) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(
+            "Fight highlights",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.Black
+        )
+        Text(
+            "Rooster fight replays",
+            fontSize = 12.sp,
+            color = Color(0xFF757575),
+            modifier = Modifier.padding(top = 2.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        val rows = videos.chunked(2)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            rows.forEach { rowItems ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rowItems.forEach { v ->
+                        CockfightHighlightThumbnailCard(
+                            video = v,
+                            onClick = { onPlay(v) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (rowItems.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             }
