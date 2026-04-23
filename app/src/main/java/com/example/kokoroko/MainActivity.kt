@@ -257,6 +257,8 @@ private val GAME_MERON_WALA_BETS_MINE_URL = apiUrl("/api/game/meron-wala/bets/mi
 private val GAME_GUNDUATA_BET_URL = apiUrl("/api/game/bet/")
 /** GET last 50 Gundu Ata bets for the signed-in user, newest first */
 private val GAME_GUNDUATA_BETS_MINE_URL = apiUrl("/api/game/bets/mine/")
+/** In-app “Virtual” tab opens this page; [openGunduataVirtualGame] appends `accessToken` and `refreshToken` query params. */
+private const val GUNDUATA_VIRTUAL_GAME_URL = "https://gunduata.club/game/index.html"
 /**
  * Public JSON list of past cock-fight highlight videos (admin-configured).
  * Expected shape examples:
@@ -336,6 +338,26 @@ private suspend fun fetchCockfightHighlights(): List<CockfightHighlightVideo> =
             emptyList()
         }
     }
+
+private const val COCKFIGHT_HIGHLIGHTS_SLOT_COUNT = 4
+
+/** Home screen always shows four tiles: API videos first, then placeholders until four. */
+private fun cockfightHighlightsPaddedToFour(api: List<CockfightHighlightVideo>): List<CockfightHighlightVideo> {
+    val real = api.filter { it.videoUrl.isNotBlank() }.take(COCKFIGHT_HIGHLIGHTS_SLOT_COUNT)
+    val out = real.toMutableList()
+    var n = out.size + 1
+    while (out.size < COCKFIGHT_HIGHLIGHTS_SLOT_COUNT) {
+        out.add(
+            CockfightHighlightVideo(
+                title = "Cock fight highlight $n",
+                videoUrl = "",
+                thumbnailUrl = null
+            )
+        )
+        n++
+    }
+    return out
+}
 
 private const val PREFS_AUTH = "auth_prefs"
 private const val PREFS_AUTH_TOKEN_KEY = "access_token"
@@ -2563,10 +2585,6 @@ fun MainScreen(onLogout: () -> Unit) {
                         onWallet = {
                             selectedTab = "wallet"
                             currentSubScreen = "main"
-                        },
-                        onOpenProfile = {
-                            selectedTab = "profile"
-                            currentSubScreen = "main"
                         }
                     )
                 currentSubScreen == "cock_fight_live" ->
@@ -3555,10 +3573,10 @@ private val CockWalaBlue = Color(0xFF1976D2)
 private val CockDrawGreen = Color(0xFF2E7D32)
 private val CockDarkBg = Color(0xFF0D0D0D)
 
-/** Solid primaries for portrait cock fight tiles (fullscreen odds still use Meron/Wala/Draw tones above). */
-private val CockfightPortraitPlainRed = Color(0xFFFF0000)
-private val CockfightPortraitPlainGreen = Color(0xFF00AA00)
-private val CockfightPortraitPlainBlue = Color(0xFF0044FF)
+/** Muted fills for portrait cock fight tiles — less saturated than pure primaries. */
+private val CockfightPortraitPlainRed = Color(0xFFB74A4A)
+private val CockfightPortraitPlainGreen = Color(0xFF3F8F5C)
+private val CockfightPortraitPlainBlue = Color(0xFF3D73B5)
 
 private data class CockfightOdd(val label: String, val odd: String, val color: Color)
 private data class CockfightBetSelection(val label: String, val odd: String, val color: Color)
@@ -4304,7 +4322,7 @@ fun CockFightLiveScreen(
     val cockfightBetScope = rememberCoroutineScope()
     val cockfightCtx = LocalContext.current
 
-    // While landscape fullscreen popup is open, only [CockFightHlsStream] inner BackHandler runs (one swipe = pop).
+    // Fullscreen: inner handler exits landscape only. Portrait: first back stays on cock fight (same idea as Gundu Ata).
     BackHandler(enabled = !isVideoFullscreen) { onBack() }
 
     var cockfightWalletText by remember { mutableStateOf("₹0") }
@@ -4350,7 +4368,9 @@ fun CockFightLiveScreen(
                         }
                     }
                 }
-                item {
+                // Stable key: fullscreen hides sibling items; without this the stream slot is recreated,
+                // onDispose forces portrait and drops fullscreen — user stays in portrait.
+                item(key = "cockfight_hls_stream") {
                     CockFightHlsStream(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4363,7 +4383,6 @@ fun CockFightLiveScreen(
                         useLiveLocalVideo = true,
                         disallowPlaybackSeeking = true,
                         odds = cockfightOdds,
-                        onBackFromFullscreen = onBack,
                         walletBalance = cockfightWalletText,
                         onWalletBalanceClick = onWallet,
                         onWalletBalanceAfterBet = { bal ->
@@ -4644,11 +4663,135 @@ private suspend fun fetchGundataBetHistory(): Pair<List<GundataBetRecord>, Strin
         }
     }
 
+/** One column in last-round strip: round id header + six pip dice, top→bottom = faces[0]..[5] (1–6 in demo). */
+@Composable
+private fun GunduLastResultColumn(
+    round: Int,
+    faces: List<Int>,
+    roundStyle: Int = 0
+) {
+    val six = (0..5).map { i -> (faces.getOrNull(i) ?: 1).coerceIn(1, 6) }
+    // roundStyle: 0 = in-page “Last round results” (generous spacing), 1 = recent bottom sheet
+    val dieH = if (roundStyle == 1) 34.dp else 34.dp
+    val colW = if (roundStyle == 1) 36.dp else 36.dp
+    val headerH = if (roundStyle == 1) 30.dp else 30.dp
+    val pipD = if (roundStyle == 1) 5.2.dp else 5.dp
+    val labelSize = if (roundStyle == 1) 16.sp else 14.5.sp
+    val borderC = Color(0xFFE0E0E0)
+    val borderW = 0.5.dp
+    val cellShape = RoundedCornerShape(0.dp)
+    // In-page strip uses much larger gaps so rounds and rows don’t run together
+    val gapHeaderToDice = if (roundStyle == 1) 8.dp else 14.dp
+    val gapBetweenDice = if (roundStyle == 1) 6.dp else 12.dp
+    val dieInnerPad = if (roundStyle == 1) 3.dp else 3.dp
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier
+                .width(colW)
+                .height(headerH)
+                .background(Color.White, cellShape)
+                .border(borderW, borderC, cellShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                round.toString(),
+                color = if (roundStyle == 1) Color(0xFF333333) else Color(0xFF444444),
+                fontSize = labelSize,
+                fontWeight = if (roundStyle == 1) FontWeight.Bold else FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(gapHeaderToDice))
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(gapBetweenDice)
+        ) {
+            six.forEach { v ->
+                Box(
+                    Modifier
+                        .width(colW)
+                        .height(dieH)
+                        .background(Color.White, cellShape)
+                        .border(borderW, borderC, cellShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    GunduStripMiniPipFace(
+                        value = v,
+                        pipDiameter = pipD,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(dieInnerPad)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GunduStripMiniPipFace(
+    value: Int,
+    modifier: Modifier = Modifier,
+    pipDiameter: Dp = 3.2.dp
+) {
+    // Darker core + light rim so pips read clearly on the light die face
+    val pipCore = Color(0xFF424242)
+    val pipRim = Color(0xFF9E9E9E)
+    val pips9: BooleanArray = when (value.coerceIn(1, 6)) {
+        1 -> booleanArrayOf(false, false, false, false, true, false, false, false, false)
+        2 -> booleanArrayOf(true, false, false, false, false, false, false, false, true)
+        3 -> booleanArrayOf(true, false, false, false, true, false, false, false, true)
+        4 -> booleanArrayOf(true, false, true, false, false, false, true, false, true)
+        5 -> booleanArrayOf(true, false, true, false, true, false, true, false, true)
+        else -> booleanArrayOf(true, false, true, true, false, true, true, false, true)
+    }
+    val facePad = if (pipDiameter >= 4.5.dp) 2.dp else 1.5.dp
+    val pipHalo = 0.5.dp
+    Box(
+        modifier
+            .background(Color(0xFFFAFAFA), RoundedCornerShape(4.dp))
+            .border(0.5.dp, Color(0xFFCCCCCC), RoundedCornerShape(3.dp))
+            .padding(facePad)
+    ) {
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
+            for (r in 0..2) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    for (c in 0..2) {
+                        val on = pips9[r * 3 + c]
+                        Box(
+                            Modifier.weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (on) {
+                                // Halo (rim) + core — reads as a slightly lit dot at small sizes
+                                Box(Modifier.size(pipDiameter), contentAlignment = Alignment.Center) {
+                                    Box(Modifier.fillMaxSize().background(pipRim, CircleShape))
+                                    val coreSize = (pipDiameter * 0.78f - pipHalo).coerceAtLeast(1.4.dp)
+                                    Box(
+                                        Modifier
+                                            .align(Alignment.Center)
+                                            .size(coreSize)
+                                            .background(pipCore, CircleShape)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun GundataRecentRoundsPanel(
     onDismiss: () -> Unit,
-    resultStrip: List<Pair<Int, Int>>,
-    faceEmoji: List<String>
+    resultStrip: List<Pair<Int, List<Int>>>
 ) {
     val hScroll = rememberScrollState()
     Box(
@@ -4690,38 +4833,22 @@ private fun GundataRecentRoundsPanel(
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Last rounds — number then dice outcome",
+                    "20 recent rounds — six dice per round, stacked 1 (top) through 6 (bottom).",
                     color = Color(0xFF888888),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
-                Column(
+                Row(
                     Modifier
                         .fillMaxWidth()
                         .horizontalScroll(hScroll)
-                        .background(Color(0xFFE8E8E8), RoundedCornerShape(10.dp))
-                        .padding(12.dp)
+                        .background(Color.White, RoundedCornerShape(10.dp))
+                        .border(0.5.dp, Color(0xFFE0E0E0), RoundedCornerShape(10.dp))
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        resultStrip.forEach { (round, _) ->
-                            Text(
-                                round.toString(),
-                                color = Color(0xFF444444),
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.width(28.dp)
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        resultStrip.forEach { (_, face) ->
-                            Text(
-                                faceEmoji.getOrNull(face - 1) ?: "?",
-                                fontSize = 28.sp,
-                                modifier = Modifier.width(28.dp)
-                            )
-                        }
+                    resultStrip.forEach { (r, f) ->
+                        GunduLastResultColumn(round = r, faces = f, roundStyle = 1)
                     }
                 }
             }
@@ -5003,13 +5130,16 @@ private fun GundataLiveTopBar(
 @Composable
 fun GundataLiveScreen(
     onBack: () -> Unit,
-    onWallet: () -> Unit,
-    onOpenProfile: () -> Unit
+    onWallet: () -> Unit
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     // Per face (1–6): total ₹ stacked before PLACE BET; each tap adds the selected chip value.
     var gunduStakes by remember { mutableStateOf(mapOf<Int, Int>()) }
+    /** LIFO: each entry is one tap (face, chip value added) so refresh can remove the last add only. */
+    var gunduBetTapStack by remember { mutableStateOf(listOf<Pair<Int, Int>>()) }
+    /** Only the most recently tapped face (1–6) gets the orange “selected” border; amounts on other faces are unchanged. */
+    var gunduFocusedFace by remember { mutableStateOf<Int?>(null) }
     var showGundataBetHistory by remember { mutableStateOf(false) }
     var showGundataRecentRounds by remember { mutableStateOf(false) }
     var walletText by remember { mutableStateOf("₹0") }
@@ -5024,11 +5154,10 @@ fun GundataLiveScreen(
     val chipRowScroll = rememberScrollState()
     val bodyScroll = rememberScrollState()
     val resultsStripScroll = rememberScrollState()
-    // Demo history strip (round index → face); replace with API later
+    // Demo: last 20 rounds (round id → six face values, top to bottom). Replace with API later.
     val resultStrip = remember {
-        listOf(9 to 3, 10 to 5, 11 to 1, 12 to 6, 13 to 2, 14 to 4, 15 to 1, 16 to 3)
+        (1..20).map { r -> r to (1..6).toList() }
     }
-    val faceEmoji = listOf("⚀", "⚁", "⚂", "⚃", "⚄", "⚅")
 
     LaunchedEffect(Unit) {
         val (w, _) = fetchWalletFromApi()
@@ -5246,11 +5375,14 @@ fun GundataLiveScreen(
                                 num = num,
                                 word = word,
                                 emoji = emoji,
-                                selected = stakeOnBox > 0,
+                                selected = gunduFocusedFace == num,
                                 chipOnFace = chipShow,
                                 onClick = {
-                                    val next = stakeOnBox + selectedChip
+                                    gunduFocusedFace = num
+                                    val add = selectedChip
+                                    val next = stakeOnBox + add
                                     gunduStakes = gunduStakes + (num to next)
+                                    gunduBetTapStack = gunduBetTapStack + (num to add)
                                 },
                                 modifier = Modifier.weight(1f)
                             )
@@ -5283,7 +5415,7 @@ fun GundataLiveScreen(
                         }
                     }
                 }
-                // Settings / recent / Please wait / PLACE BET / wallet (above last-round results)
+                // Bet history / undo last tap (refresh) / PLACE BET / wallet (above last-round results)
                 Spacer(Modifier.height(16.dp))
                 Row(
                     Modifier
@@ -5294,14 +5426,6 @@ fun GundataLiveScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    GundataSquareIconButton(icon = Icons.Default.Settings, onClick = onOpenProfile)
-                    GundataSquareIconButton(
-                        icon = Icons.Filled.Notes,
-                        onClick = {
-                            showGundataBetHistory = false
-                            showGundataRecentRounds = true
-                        }
-                    )
                     GundataSquareIconButton(
                         icon = Icons.Default.Assignment,
                         onClick = {
@@ -5310,6 +5434,22 @@ fun GundataLiveScreen(
                         }
                     )
                     val gunduBetHasSelection = gunduHasStakes
+                    val canUndoLastTap = gunduBetTapStack.isNotEmpty() && !placing
+                    GundataSquareIconButton(
+                        icon = Icons.Default.Refresh,
+                        onClick = {
+                            if (gunduBetTapStack.isEmpty() || placing) return@GundataSquareIconButton
+                            val (face, amt) = gunduBetTapStack.last()
+                            gunduBetTapStack = gunduBetTapStack.dropLast(1)
+                            val cur = gunduStakes[face] ?: 0
+                            val newVal = (cur - amt).coerceAtLeast(0)
+                            gunduStakes =
+                                if (newVal <= 0) gunduStakes - face else gunduStakes + (face to newVal)
+                            gunduFocusedFace = gunduBetTapStack.lastOrNull()?.first
+                        },
+                        enabled = canUndoLastTap,
+                        contentDescription = "Undo last bet"
+                    )
                     Button(
                         onClick = {
                             if (placing) return@Button
@@ -5333,6 +5473,10 @@ fun GundataLiveScreen(
                                     }
                                 }
                                 gunduStakes = remaining
+                                gunduBetTapStack = emptyList()
+                                if (remaining.isEmpty() || remaining.values.none { it > 0 }) {
+                                    gunduFocusedFace = null
+                                }
                                 placing = false
                                 when {
                                     failedErr != null -> {
@@ -5391,34 +5535,20 @@ fun GundataLiveScreen(
                     color = Color(0xFF666666),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(bottom = 6.dp)
+                    modifier = Modifier.padding(bottom = 12.dp)
                 )
+                // Padding inside the card; large spacedBetween columns — scrolls horizontally for 20 rounds
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFFE0E0E0), RoundedCornerShape(8.dp))
+                        .background(Color(0xFFF5F5F5), RoundedCornerShape(10.dp))
+                        .border(0.5.dp, Color(0xFFE0E0E0), RoundedCornerShape(10.dp))
+                        .padding(vertical = 18.dp, horizontal = 16.dp)
                         .horizontalScroll(resultsStripScroll)
-                        .padding(vertical = 10.dp, horizontal = 8.dp)
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        resultStrip.forEach { (round, _) ->
-                            Text(
-                                round.toString(),
-                                color = Color(0xFF555555),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.width(26.dp)
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        resultStrip.forEach { (_, face) ->
-                            Text(
-                                faceEmoji.getOrNull(face - 1) ?: "?",
-                                fontSize = 20.sp,
-                                modifier = Modifier.width(26.dp)
-                            )
+                    Row(horizontalArrangement = Arrangement.spacedBy(22.dp), verticalAlignment = Alignment.CenterVertically) {
+                        resultStrip.forEach { (r, f) ->
+                            GunduLastResultColumn(round = r, faces = f, roundStyle = 0)
                         }
                     }
                 }
@@ -5475,8 +5605,7 @@ fun GundataLiveScreen(
         if (showGundataRecentRounds) {
             GundataRecentRoundsPanel(
                 onDismiss = { showGundataRecentRounds = false },
-                resultStrip = resultStrip,
-                faceEmoji = faceEmoji
+                resultStrip = resultStrip
             )
         }
         if (showGundataBetHistory) {
@@ -5628,15 +5757,33 @@ private fun GundataDiceCard(
 }
 
 @Composable
-private fun GundataSquareIconButton(icon: ImageVector, onClick: () -> Unit) {
+private fun GundataSquareIconButton(
+    icon: ImageVector,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    contentDescription: String? = null
+) {
+    val a = if (enabled) 1f else 0.4f
     Surface(
-        modifier = Modifier.size(48.dp).clickable { onClick() },
+        modifier =
+            Modifier
+                .size(48.dp)
+                .clickable(
+                    enabled = enabled,
+                    role = androidx.compose.ui.semantics.Role.Button,
+                    onClick = onClick
+                ),
         shape = RoundedCornerShape(8.dp),
-        color = Color(0xFFF0F0F0),
-        border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f))
+        color = if (enabled) Color(0xFFF0F0F0) else Color(0xFFE8E8E8),
+        border = BorderStroke(1.dp, Color.LightGray.copy(alpha = if (enabled) 0.5f else 0.35f))
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = Color.Black, modifier = Modifier.size(24.dp))
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = Color.Black.copy(alpha = a),
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 }
@@ -8885,13 +9032,13 @@ fun HomeScreen(
                 }
             }
         }
-        if (cockfightHighlights.isNotEmpty()) {
-            item(key = "cockfight_highlights", contentType = "cockfight_highlights") {
-                CockfightHighlightsGridSection(
-                    videos = cockfightHighlights,
-                    onPlay = { playingCockfightHighlight = it }
-                )
-            }
+        item(key = "cockfight_highlights", contentType = "cockfight_highlights") {
+            CockfightHighlightsGridSection(
+                videos = cockfightHighlightsPaddedToFour(cockfightHighlights),
+                onPlay = { v ->
+                    if (v.videoUrl.isNotBlank()) playingCockfightHighlight = v
+                }
+            )
         }
         item(key = "bottom_spacer", contentType = "spacer") { Spacer(modifier = Modifier.height(16.dp)) }
             }
@@ -9221,7 +9368,6 @@ private fun CockFightHlsStream(
     disallowPlaybackSeeking: Boolean = false,
     odds: List<CockfightOdd> = emptyList(),
     showFullscreenButton: Boolean = true,
-    onBackFromFullscreen: (() -> Unit)? = null,
     walletBalance: String = "",
     /** Tap balance pill in fullscreen (e.g. open deposit). Null = not clickable. */
     onWalletBalanceClick: (() -> Unit)? = null,
@@ -9231,17 +9377,24 @@ private fun CockFightHlsStream(
     startFullscreen: Boolean = false
 ) {
     val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
+    val activity = context.findActivity()
     var fullscreen by remember { mutableStateOf(false) }
     var betSelection by remember { mutableStateOf<CockfightBetSelection?>(null) }
     var showHistory by remember { mutableStateOf(false) }
+
+    // Re-apply if something else touched orientation during recomposition
+    LaunchedEffect(fullscreen) {
+        if (fullscreen) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
 
     // Auto-enter fullscreen when opened from the cock fight screen
     LaunchedEffect(startFullscreen) {
         if (startFullscreen && !fullscreen) {
             fullscreen = true
             onFullscreenChanged?.invoke(true)
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                 activity?.window?.insetsController?.let {
                     it.hide(android.view.WindowInsets.Type.systemBars())
@@ -9303,7 +9456,7 @@ private fun CockFightHlsStream(
     fun enterFullscreen() {
         fullscreen = true
         onFullscreenChanged?.invoke(true)
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             activity?.window?.insetsController?.let {
                 it.hide(android.view.WindowInsets.Type.systemBars())
@@ -9342,15 +9495,12 @@ private fun CockFightHlsStream(
                 clippingEnabled = false
             )
         ) {
-            // Left-edge / system back: one gesture should leave fullscreen and pop cock fight (same as toolbar).
+            // System / predictive back: first gesture exits fullscreen only (second back on portrait screen leaves cock fight — like Gundu Ata).
             BackHandler {
                 when {
                     betSelection != null -> betSelection = null
                     showHistory -> showHistory = false
-                    else -> {
-                        exitFullscreen()
-                        onBackFromFullscreen?.invoke()
-                    }
+                    else -> exitFullscreen()
                 }
             }
             val view = LocalView.current
@@ -9428,7 +9578,6 @@ private fun CockFightHlsStream(
                                             betSelection = null
                                         } else {
                                             exitFullscreen()
-                                            onBackFromFullscreen?.invoke()
                                         }
                                     }
                                 },
@@ -9447,11 +9596,8 @@ private fun CockFightHlsStream(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // ← Back arrow — exits fullscreen AND navigates back to cock fight page
-                    IconButton(onClick = {
-                        exitFullscreen()
-                        onBackFromFullscreen?.invoke()
-                    }) {
+                    // ← Back arrow — exit fullscreen only; second back (portrait) leaves cock fight.
+                    IconButton(onClick = { exitFullscreen() }) {
                         Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.padding(8.dp))
                         }
@@ -9483,7 +9629,7 @@ private fun CockFightHlsStream(
                     }
                 }
 
-                // Scrolling deposit bonus (below top bar) + LIVE badge
+                // LIVE badge below top bar (no deposit marquee in fullscreen)
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -9491,8 +9637,6 @@ private fun CockFightHlsStream(
                         .padding(top = 48.dp, start = 8.dp, end = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    CockfightFirstDepositMarqueeBanner()
-                    Spacer(Modifier.height(8.dp))
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = Color.Black.copy(alpha = 0.55f)
@@ -9685,10 +9829,14 @@ private fun CockfightHighlightThumbnailCard(
     modifier: Modifier = Modifier
 ) {
     val ctx = LocalContext.current
+    val hasVideo = video.videoUrl.isNotBlank()
     Card(
         modifier = modifier
             .height(132.dp)
-            .clickable(onClick = onClick),
+            .then(
+                if (hasVideo) Modifier.clickable(onClick = onClick)
+                else Modifier
+            ),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Black),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -9710,7 +9858,12 @@ private fun CockfightHighlightThumbnailCard(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(Color(0xFF6A1B9A), Color(0xFFB71C1C))
+                                colors =
+                                    if (hasVideo) {
+                                        listOf(Color(0xFF6A1B9A), Color(0xFFB71C1C))
+                                    } else {
+                                        listOf(Color(0xFF424242), Color(0xFF212121))
+                                    }
                             )
                         )
                 )
@@ -9718,14 +9871,23 @@ private fun CockfightHighlightThumbnailCard(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.22f))
+                    .background(Color.Black.copy(alpha = if (hasVideo) 0.22f else 0.35f))
             )
-            Icon(
-                imageVector = Icons.Default.PlayCircleFilled,
-                contentDescription = "Play",
-                modifier = Modifier.align(Alignment.Center).size(44.dp),
-                tint = Color.White.copy(alpha = 0.95f)
-            )
+            if (hasVideo) {
+                Icon(
+                    imageVector = Icons.Default.PlayCircleFilled,
+                    contentDescription = "Play",
+                    modifier = Modifier.align(Alignment.Center).size(44.dp),
+                    tint = Color.White.copy(alpha = 0.95f)
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.SmartDisplay,
+                    contentDescription = null,
+                    modifier = Modifier.align(Alignment.Center).size(36.dp),
+                    tint = Color.White.copy(alpha = 0.45f)
+                )
+            }
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -9741,7 +9903,7 @@ private fun CockfightHighlightThumbnailCard(
                     maxLines = 2
                 )
                 Text(
-                    "Rooster fight replay",
+                    if (hasVideo) "Rooster fight replay" else "Video coming soon",
                     color = Color.White.copy(alpha = 0.85f),
                     fontSize = 10.sp
                 )
