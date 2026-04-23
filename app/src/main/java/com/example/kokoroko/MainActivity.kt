@@ -3555,6 +3555,11 @@ private val CockWalaBlue = Color(0xFF1976D2)
 private val CockDrawGreen = Color(0xFF2E7D32)
 private val CockDarkBg = Color(0xFF0D0D0D)
 
+/** Solid primaries for portrait cock fight tiles (fullscreen odds still use Meron/Wala/Draw tones above). */
+private val CockfightPortraitPlainRed = Color(0xFFFF0000)
+private val CockfightPortraitPlainGreen = Color(0xFF00AA00)
+private val CockfightPortraitPlainBlue = Color(0xFF0044FF)
+
 private data class CockfightOdd(val label: String, val odd: String, val color: Color)
 private data class CockfightBetSelection(val label: String, val odd: String, val color: Color)
 
@@ -4194,11 +4199,8 @@ private fun CockfightPortraitLargeBetCard(
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         color = baseColor,
-        border = BorderStroke(
-            width = if (selected) 3.dp else 1.dp,
-            color = if (selected) OrangePrimary else Color.White.copy(alpha = 0.28f)
-        ),
-        shadowElevation = if (selected) 8.dp else 2.dp
+        border = if (selected) BorderStroke(3.dp, OrangePrimary) else null,
+        shadowElevation = 0.dp
     ) {
         Column(
             Modifier
@@ -4417,10 +4419,15 @@ fun CockFightLiveScreen(
                                     1 -> drawHeight
                                     else -> meronWalaHeight
                                 }
+                                val plain = when (index) {
+                                    0 -> CockfightPortraitPlainRed
+                                    1 -> CockfightPortraitPlainGreen
+                                    else -> CockfightPortraitPlainBlue
+                                }
                                 CockfightPortraitLargeBetCard(
                                     label = o.label,
                                     odd = o.odd,
-                                    baseColor = o.color,
+                                    baseColor = plain,
                                     selected = selectedCockfightOdd?.label == o.label,
                                     modifier = Modifier.weight(1f),
                                     cardHeight = h,
