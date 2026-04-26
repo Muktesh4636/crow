@@ -39,6 +39,83 @@
 
       <main class="content" id="main-scroll">
         <input type="file" id="wallet-deposit-screenshot" accept="image/*" class="visually-hidden" hidden aria-hidden="true" />
+        <input type="file" id="dep-screenshot-input" accept="image/*" class="visually-hidden" hidden aria-hidden="true" />
+
+        <!-- Deposit flow full-page dialog -->
+        <div class="dep-dialog" id="dep-dialog" hidden>
+          <div class="dep-dialog__page">
+            <header class="dep-dialog__topbar">
+              <button type="button" class="dep-dialog__back" id="dep-dialog-close" aria-label="Back">
+                <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+              </button>
+              <h2 class="dep-dialog__topbar-title">Complete Deposit</h2>
+              <span aria-hidden="true"></span>
+            </header>
+
+            <!-- Amount banner -->
+            <div class="dep-dialog__amount-banner">
+              <span class="dep-dialog__amount-label">Amount to Pay</span>
+              <span class="dep-dialog__amount-value" id="dep-amount-display">₹1,000</span>
+            </div>
+
+            <div class="dep-dialog__body" id="dep-dialog-body">
+              <!-- Loading -->
+              <div class="dep-dialog__loading" id="dep-loading">
+                <div class="dep-dialog__spinner"></div>
+                <p>Loading payment details…</p>
+              </div>
+
+              <!-- Methods tabs -->
+              <div class="dep-dialog__methods" id="dep-methods-wrap" hidden>
+                <p class="dep-dialog__section-label">Select Payment Method</p>
+                <div class="dep-dialog__methods-row" id="dep-methods-row"></div>
+              </div>
+
+              <!-- Payment details card -->
+              <div class="dep-dialog__card" id="dep-details-card" hidden>
+                <!-- UPI block -->
+                <div id="dep-upi-block" hidden>
+                  <p class="dep-dialog__section-label">Pay via UPI</p>
+                  <div class="dep-dialog__upi-row">
+                    <span class="dep-dialog__upi-id" id="dep-upi-id"></span>
+                    <button type="button" class="dep-dialog__copy" id="dep-copy-upi" aria-label="Copy UPI ID">
+                      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                    </button>
+                  </div>
+                  <div class="dep-dialog__qr-wrap" id="dep-qr-wrap" hidden>
+                    <img id="dep-qr-img" class="dep-dialog__qr" src="" alt="QR Code" />
+                  </div>
+                </div>
+
+                <!-- Bank block -->
+                <div id="dep-bank-block" hidden>
+                  <p class="dep-dialog__section-label">Pay via Bank Transfer</p>
+                  <div class="dep-dialog__bank-grid" id="dep-bank-grid"></div>
+                </div>
+              </div>
+
+              <!-- Upload section -->
+              <div class="dep-dialog__upload-section" id="dep-upload-section" hidden>
+                <p class="dep-dialog__section-label">After paying, upload your screenshot</p>
+                <button type="button" class="dep-dialog__upload-btn" id="dep-upload-btn">
+                  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                  Upload Payment Screenshot
+                </button>
+                <div class="dep-dialog__file-preview" id="dep-file-preview" hidden>
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#22c55e" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span id="dep-file-name">screenshot.jpg</span>
+                  <button type="button" class="dep-dialog__file-remove" id="dep-file-remove" aria-label="Remove">×</button>
+                </div>
+              </div>
+
+              <div class="dep-dialog__err" id="dep-err" hidden></div>
+
+              <button type="button" class="dep-dialog__submit" id="dep-submit-btn" disabled>
+                <span id="dep-submit-txt">Submit Deposit Request</span>
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- Login (LoginScreen in MainActivity.kt) -->
         <div class="panel ap-auth ap-login" data-panel="login" id="login-panel" hidden>
@@ -520,21 +597,6 @@
         <!-- Gundata LIVE (GundataLiveScreen) — no bottom nav; matches APK: top bar, promo strip, video, Live/Virtual, dice grid, chips, action bar, last results -->
         <div class="panel gundu-app" data-panel="gundu" id="gundu-panel" hidden>
           <div class="gundu-chrome">
-            <header class="gundu-top">
-              <a href="#home" class="gundu-back" aria-label="Back">
-                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-              </a>
-              <div class="gundu-ttl" role="text">
-                <span class="gundu-ttl__name">Gundata</span>
-                <span class="gundu-ttl__live">LIVE</span>
-              </div>
-              <a href="#wallet" class="gundu-balancechip" data-nav="wallet" aria-label="Wallet">
-                <span class="gundu-balancechip__ic" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="var(--orange-primary)" d="M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9z"/></svg>
-                </span>
-                <span class="gundu-balancechip__num" id="gundu-balance">₹0</span>
-              </a>
-            </header>
             <div class="gundu-stripe" aria-hidden="true"></div>
             <div class="gundu-promo" aria-hidden="true">
               <div class="gundu-promo__track">
@@ -559,7 +621,7 @@
                   preload="metadata"
                   poster="assets/banner_gundu.png"
                 >
-                  <!-- Add assets/gunduata_live.mp4 to match APK raw stream -->
+                  <source src="assets/gunduata_live.mp4" type="video/mp4" />
                 </video>
                 <p class="gundu-stream__fs-ph" aria-hidden="true">Playing fullscreen</p>
                 <div class="gundu-livecap">

@@ -254,14 +254,14 @@
       ".wallet-pill[data-nav], .game-tile[data-nav], a.brand--home[data-nav], a.cockfight-tap-home[data-nav]"
     )
     .forEach((el) => {
-      const n = el.getAttribute("data-nav");
-      if (n && NAV_HASHES.includes(n)) {
-        el.addEventListener("click", (e) => {
-          e.preventDefault();
-          goTab(n);
-        });
-      }
-    });
+    const n = el.getAttribute("data-nav");
+    if (n && NAV_HASHES.includes(n)) {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        goTab(n);
+      });
+    }
+  });
 
   const search = document.querySelector(".search__input");
   const clear = document.querySelector(".search__clear");
@@ -570,13 +570,221 @@
       });
     }
     const fileIn = document.getElementById("wallet-deposit-screenshot");
+
+    /* ── Deposit Flow Dialog ── */
+    (function setupDepositDialog() {
+      const dialog = document.getElementById("dep-dialog");
+      const closeBtn = document.getElementById("dep-dialog-close");
+      const amountDisplay = document.getElementById("dep-amount-display");
+      const loadingEl = document.getElementById("dep-loading");
+      const methodsWrap = document.getElementById("dep-methods-wrap");
+      const methodsRow = document.getElementById("dep-methods-row");
+      const detailsCard = document.getElementById("dep-details-card");
+      const upiBlock = document.getElementById("dep-upi-block");
+      const upiIdEl = document.getElementById("dep-upi-id");
+      const copyUpiBtn = document.getElementById("dep-copy-upi");
+      const qrWrap = document.getElementById("dep-qr-wrap");
+      const qrImg = document.getElementById("dep-qr-img");
+      const bankBlock = document.getElementById("dep-bank-block");
+      const bankGrid = document.getElementById("dep-bank-grid");
+      const uploadSection = document.getElementById("dep-upload-section");
+      const uploadBtn = document.getElementById("dep-upload-btn");
+      const filePreview = document.getElementById("dep-file-preview");
+      const fileNameEl = document.getElementById("dep-file-name");
+      const fileRemove = document.getElementById("dep-file-remove");
+      const errEl = document.getElementById("dep-err");
+      const submitBtn = document.getElementById("dep-submit-btn");
+      const submitTxt = document.getElementById("dep-submit-txt");
+      const depFileIn = document.getElementById("dep-screenshot-input");
+
+      let methods = [];
+      let selectedMethod = null;
+      let selectedFile = null;
+      let depositAmount = 0;
+
+      function showErr(msg) {
+        if (!errEl) return;
+        errEl.textContent = msg;
+        errEl.hidden = !msg;
+      }
+
+      function copyText(text) {
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text).catch(() => {});
+        } else {
+          const el = document.createElement("textarea");
+          el.value = text;
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand("copy");
+          document.body.removeChild(el);
+        }
+      }
+
+      function renderMethod(m) {
+        if (!detailsCard) return;
+        detailsCard.hidden = false;
+        const isUpi = !m.type || m.type === "UPI" || m.type.includes("UPI");
+        if (upiBlock) upiBlock.hidden = !isUpi;
+        if (bankBlock) bankBlock.hidden = isUpi;
+        if (isUpi) {
+          if (upiIdEl) upiIdEl.textContent = m.upiId || "—";
+          if (copyUpiBtn) {
+            copyUpiBtn.onclick = () => {
+              copyText(m.upiId || "");
+              copyUpiBtn.title = "Copied!";
+              setTimeout(() => { copyUpiBtn.title = "Copy"; }, 1500);
+            };
+          }
+          if (qrWrap && qrImg) {
+            if (m.qrImageUrl) {
+              qrImg.src = m.qrImageUrl;
+              qrWrap.hidden = false;
+            } else {
+              qrWrap.hidden = true;
+            }
+          }
+        } else {
+          if (bankGrid) {
+            const rows = [
+              ["Account Name", m.accountHolder],
+              ["Bank Name", m.bankName],
+              ["Account Number", m.accountNumber],
+              ["IFSC Code", m.ifsc]
+            ].filter(([, v]) => v);
+            bankGrid.innerHTML = rows.map(([label, val]) =>
+              `<div class="dep-bank-row">
+                <span class="dep-bank-row__label">${label}</span>
+                <span class="dep-bank-row__val">${val}
+                  <button type="button" class="dep-bank-copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${val}')" aria-label="Copy ${label}">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                  </button>
+                </span>
+              </div>`
+            ).join("");
+          }
+        }
+        if (uploadSection) uploadSection.hidden = false;
+      }
+
+      function selectMethod(m) {
+        selectedMethod = m;
+        if (methodsRow) {
+          methodsRow.querySelectorAll(".dep-method-btn").forEach((b) => {
+            b.classList.toggle("is-active", Number(b.dataset.mid) === m.id);
+          });
+        }
+        renderMethod(m);
+      }
+
+      function updateSubmit() {
+        if (submitBtn) submitBtn.disabled = !selectedFile || !selectedMethod;
+      }
+
+      function openDialog(amount) {
+        if (!dialog) return;
+        depositAmount = amount;
+        selectedFile = null;
+        selectedMethod = null;
+        methods = [];
+        if (amountDisplay) amountDisplay.textContent = "\u20B9" + amount.toLocaleString("en-IN");
+        if (loadingEl) loadingEl.hidden = false;
+        if (methodsWrap) methodsWrap.hidden = true;
+        if (detailsCard) detailsCard.hidden = true;
+        if (uploadSection) uploadSection.hidden = true;
+        if (filePreview) filePreview.hidden = true;
+        if (errEl) errEl.hidden = true;
+        if (submitBtn) submitBtn.disabled = true;
+        dialog.hidden = false;
+        document.body.style.overflow = "hidden";
+
+        K.fetchPaymentMethodsDetails().then(({ data, error }) => {
+          if (loadingEl) loadingEl.hidden = true;
+          if (error || !data || !data.length) {
+            showErr(error || "No payment methods available. Please contact support.");
+            return;
+          }
+          methods = data;
+          if (methodsRow) {
+            methodsRow.innerHTML = methods.map((m) =>
+              `<button type="button" class="dep-method-btn" data-mid="${m.id}">${m.name || m.type}</button>`
+            ).join("");
+            methodsRow.querySelectorAll(".dep-method-btn").forEach((b) => {
+              b.addEventListener("click", () => {
+                const m = methods.find((x) => x.id === Number(b.dataset.mid));
+                if (m) selectMethod(m);
+              });
+            });
+          }
+          if (methodsWrap) methodsWrap.hidden = false;
+          selectMethod(methods[0]);
+          updateSubmit();
+        });
+      }
+
+      function closeDialog() {
+        if (dialog) dialog.hidden = true;
+        document.body.style.overflow = "";
+        if (depFileIn) depFileIn.value = "";
+        selectedFile = null;
+        if (filePreview) filePreview.hidden = true;
+        updateSubmit();
+      }
+
+      if (closeBtn) closeBtn.addEventListener("click", closeDialog);
+
+      if (uploadBtn && depFileIn) {
+        uploadBtn.addEventListener("click", () => { depFileIn.value = ""; depFileIn.click(); });
+        depFileIn.addEventListener("change", () => {
+          const f = depFileIn.files && depFileIn.files[0];
+          if (!f) return;
+          selectedFile = f;
+          if (fileNameEl) fileNameEl.textContent = f.name;
+          if (filePreview) filePreview.hidden = false;
+          showErr("");
+          updateSubmit();
+        });
+      }
+
+      if (fileRemove) {
+        fileRemove.addEventListener("click", () => {
+          selectedFile = null;
+          if (depFileIn) depFileIn.value = "";
+          if (filePreview) filePreview.hidden = true;
+          updateSubmit();
+        });
+      }
+
+      if (submitBtn) {
+        submitBtn.addEventListener("click", async () => {
+          if (!selectedFile || !selectedMethod || !K) return;
+          showErr("");
+          submitBtn.disabled = true;
+          if (submitTxt) submitTxt.textContent = "Submitting…";
+          const { data, error } = await K.postDepositUpload(selectedFile, depositAmount, selectedMethod.id);
+          submitBtn.disabled = false;
+          if (submitTxt) submitTxt.textContent = "Submit Deposit Request";
+          if (error) {
+            showErr(error);
+          } else {
+            closeDialog();
+            await refreshAllBalances();
+            window.alert("Deposit submitted! Status: " + (data && data.status ? data.status : "PENDING") + "\nYour account will be credited once approved.");
+          }
+        });
+      }
+
+      /* Hook into Proceed to Deposit */
+      window.__openDepositDialog = openDialog;
+    })();
+
     btnDep?.addEventListener("click", async () => {
       if (!K || !K.isAuthed()) {
         location.hash = "login";
         return;
       }
       if (K.isLocalDemo()) {
-        window.alert("Sign in with a real account to deposit (demo user cannot).");
+        window.alert("Sign in with a real account to deposit.");
         return;
       }
       const amount = parseInt(amt && amt.value ? amt.value.replace(/\D/g, "") : "0", 10) || 0;
@@ -584,24 +792,7 @@
         window.alert("Minimum deposit is ₹100.");
         return;
       }
-      if (!fileIn) {
-        window.alert("File input missing");
-        return;
-      }
-      fileIn.value = "";
-      fileIn.onchange = async () => {
-        const f = fileIn.files && fileIn.files[0];
-        if (!f) return;
-        const mid = pickPaymentMethodId();
-        const { data, error } = await K.postDepositUpload(f, amount, mid);
-        if (error) window.alert(error);
-        else {
-          window.alert("Deposit proof submitted. Status: " + (data && data.status ? data.status : "PENDING"));
-          await refreshAllBalances();
-        }
-        fileIn.value = "";
-      };
-      fileIn.click();
+      if (window.__openDepositDialog) window.__openDepositDialog(amount);
     });
     btnWdr?.addEventListener("click", async () => {
       if (!K || !K.isAuthed()) {
@@ -884,27 +1075,30 @@
 
     const streamBox = document.getElementById("gundu-stream-box");
     function openFs() {
-      if (fsRoot) {
-        fsRoot.hidden = false;
-        streamBox?.classList.add("gundu-stream-box--fs");
-        videoInline?.pause();
-        const src = videoInline?.querySelector("source");
-        if (videoFs && videoInline) {
-          videoFs.poster = videoInline.poster || "";
-          if (src?.src) {
-            let s = videoFs.querySelector("source");
-            if (!s) {
-              s = document.createElement("source");
-              videoFs.appendChild(s);
-            }
-            s.src = src.src;
-            s.type = src.type || "video/mp4";
-            videoFs.load();
-          }
-          videoFs.currentTime = videoInline.currentTime || 0;
+      if (!fsRoot) return;
+      fsRoot.hidden = false;
+      streamBox?.classList.add("gundu-stream-box--fs");
+      document.body.style.overflow = "hidden";
+      videoInline?.pause();
+      if (!videoFs) return;
+      videoFs.poster = videoInline?.poster || "assets/banner_gundu.png";
+      const srcEl = videoInline?.querySelector("source");
+      const srcUrl = srcEl?.src || "assets/gunduata_live.mp4";
+      const savedTime = videoInline?.currentTime || 0;
+      let s = videoFs.querySelector("source");
+      if (!s) { s = document.createElement("source"); videoFs.appendChild(s); }
+      if (s.src !== srcUrl) {
+        s.src = srcUrl;
+        s.type = "video/mp4";
+        videoFs.load();
+        videoFs.addEventListener("canplay", function onReady() {
+          videoFs.removeEventListener("canplay", onReady);
+          videoFs.currentTime = savedTime;
           videoFs.play().catch(() => {});
-        }
-        document.body.style.overflow = "hidden";
+        });
+      } else {
+        videoFs.currentTime = savedTime;
+        videoFs.play().catch(() => {});
       }
     }
     function closeFs() {
