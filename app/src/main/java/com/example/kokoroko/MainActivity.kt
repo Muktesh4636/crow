@@ -13,6 +13,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -257,7 +260,7 @@ private val GAME_MERON_WALA_BETS_MINE_URL = apiUrl("/api/game/meron-wala/bets/mi
 private val GAME_GUNDUATA_BET_URL = apiUrl("/api/game/bet/")
 /** GET last 50 Gundu Ata bets for the signed-in user, newest first */
 private val GAME_GUNDUATA_BETS_MINE_URL = apiUrl("/api/game/bets/mine/")
-/** In-app “Virtual” tab opens this page; [openGunduataVirtualGame] appends `accessToken` and `refreshToken` query params. */
+/** Virtual tab loads this URL in an in-app [WebView] via [gunduataVirtualWebLoad] (query params + [GunduataAuthWebViewClient] localStorage). */
 private const val GUNDUATA_VIRTUAL_GAME_URL = "https://gunduata.club/game/index.html"
 /**
  * Public JSON list of past cock-fight highlight videos (admin-configured).
@@ -361,6 +364,7 @@ private fun cockfightHighlightsPaddedToFour(api: List<CockfightHighlightVideo>):
 
 private const val PREFS_AUTH = "auth_prefs"
 private const val PREFS_AUTH_TOKEN_KEY = "access_token"
+private const val PREFS_REFRESH_TOKEN_KEY = "refresh_token"
 private const val PREFS_LOCAL_DEMO_USER = "local_demo_username"
 
 /** Sentinel stored as [AuthTokenStore.accessToken] for embedded demo logins (not a real JWT). */
@@ -369,6 +373,9 @@ private const val LOCAL_DEMO_SESSION_TOKEN = "LOCAL_DEMO_SESSION"
 private object AuthTokenStore {
     @Volatile
     var accessToken: String? = null
+
+    @Volatile
+    var refreshToken: String? = null
 
     /** Display name for the current local demo session (when [isLocalDemoSession]). */
     @Volatile
@@ -379,6 +386,7 @@ private object AuthTokenStore {
     fun load(context: Context) {
         val sp = context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
         accessToken = sp.getString(PREFS_AUTH_TOKEN_KEY, null)
+        refreshToken = sp.getString(PREFS_REFRESH_TOKEN_KEY, null)
         localDemoUsername =
             if (accessToken == LOCAL_DEMO_SESSION_TOKEN) {
                 sp.getString(PREFS_LOCAL_DEMO_USER, null)
@@ -387,33 +395,40 @@ private object AuthTokenStore {
             }
     }
 
-    fun save(context: Context, token: String) {
-        accessToken = token
+    fun save(context: Context, access: String, refresh: String? = null) {
+        accessToken = access
+        refreshToken = refresh
         localDemoUsername = null
         context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
             .edit()
-            .putString(PREFS_AUTH_TOKEN_KEY, token)
+            .putString(PREFS_AUTH_TOKEN_KEY, access)
             .remove(PREFS_LOCAL_DEMO_USER)
-            .apply()
+            .apply {
+                if (refresh != null) putString(PREFS_REFRESH_TOKEN_KEY, refresh) else remove(PREFS_REFRESH_TOKEN_KEY)
+            }
     }
 
     fun saveLocalDemo(context: Context, username: String) {
         val u = username.trim().ifBlank { "user" }
         accessToken = LOCAL_DEMO_SESSION_TOKEN
         localDemoUsername = u
+        refreshToken = null
         context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
             .edit()
             .putString(PREFS_AUTH_TOKEN_KEY, LOCAL_DEMO_SESSION_TOKEN)
             .putString(PREFS_LOCAL_DEMO_USER, u)
+            .remove(PREFS_REFRESH_TOKEN_KEY)
             .apply()
     }
 
     fun clear(context: Context) {
         accessToken = null
+        refreshToken = null
         localDemoUsername = null
         context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
             .edit()
             .remove(PREFS_AUTH_TOKEN_KEY)
+            .remove(PREFS_REFRESH_TOKEN_KEY)
             .remove(PREFS_LOCAL_DEMO_USER)
             .apply()
     }
@@ -428,6 +443,187 @@ private val sessionExpiredEvents = MutableSharedFlow<Unit>(extraBufferCapacity =
 /** Call from any suspend function that receives a 401 to force the user back to login. */
 private suspend fun notifySessionExpired() {
     sessionExpiredEvents.emit(Unit)
+}
+
+private data class GunduataVirtualWebLoad(
+    val loadUrl: String,
+    val accessToken: String,
+    val refreshToken: String
+)
+
+/**
+ * URL + same tokens for [GunduataAuthWebViewClient] (query string often misses what SPAs read from localStorage).
+ * Local demo: empty strings (user must use a real account for the web game).
+ */
+private fun gunduataVirtualWebLoad(): GunduataVirtualWebLoad {
+    val access = if (AuthTokenStore.isLocalDemoSession()) "" else AuthTokenStore.accessToken.orEmpty()
+    val refresh = if (AuthTokenStore.isLocalDemoSession()) "" else AuthTokenStore.refreshToken.orEmpty()
+    val json =
+        JSONObject()
+            .put("accessToken", access)
+            .put("refreshToken", refresh)
+            .toString()
+    val loadUrl =
+        Uri.parse(GUNDUATA_VIRTUAL_GAME_URL).buildUpon()
+            .appendQueryParameter("auth", json)
+            .appendQueryParameter("accessToken", access)
+            .appendQueryParameter("refreshToken", refresh)
+            .build()
+            .toString()
+    return GunduataVirtualWebLoad(loadUrl, access, refresh)
+}
+
+/**
+ * Injects access/refresh into localStorage (and a few common key aliases) so the gunduata.club SPA can
+ * read auth the same way as when launched from a browser with a stored session.
+ */
+private class GunduataAuthWebViewClient(
+    private val access: String,
+    private val refresh: String
+) : WebViewClient() {
+    private fun injectAuth(view: WebView) {
+        if (access.isEmpty() && refresh.isEmpty()) return
+        val qa = JSONObject.quote(access)
+        val qr = JSONObject.quote(refresh)
+        val script =
+            """
+            (function() {
+              var a = $qa, r = $qr;
+              function write() {
+                try {
+                  if (a) {
+                    localStorage.setItem("accessToken", a);
+                    localStorage.setItem("access_token", a);
+                    localStorage.setItem("access", a);
+                    localStorage.setItem("token", a);
+                    sessionStorage.setItem("accessToken", a);
+                    sessionStorage.setItem("token", a);
+                  }
+                  if (r) {
+                    localStorage.setItem("refreshToken", r);
+                    localStorage.setItem("refresh_token", r);
+                    sessionStorage.setItem("refreshToken", r);
+                  }
+                  var both = JSON.stringify({ accessToken: a, refreshToken: r });
+                  localStorage.setItem("auth", both);
+                  localStorage.setItem("kokoroko_auth", both);
+                  window.dispatchEvent(new CustomEvent("kokoroko-auth", { detail: { accessToken: a, refreshToken: r } }));
+                } catch (e) {}
+              }
+              write();
+            })();
+            """.trimIndent()
+        view.evaluateJavascript(script, null)
+    }
+
+    override fun onPageCommitVisible(view: WebView?, url: String?) {
+        super.onPageCommitVisible(view, url)
+        if (Build.VERSION.SDK_INT >= 23) view?.let { injectAuth(it) }
+    }
+
+    override fun onPageFinished(view: WebView?, url: String?) {
+        super.onPageFinished(view, url)
+        view?.let { injectAuth(it) }
+    }
+}
+
+@Composable
+private fun GunduataVirtualWebOverlay(
+    load: GunduataVirtualWebLoad,
+    onClose: () -> Unit
+) {
+    var webView: WebView? by remember { mutableStateOf(null) }
+    val url = load.loadUrl
+    val access = load.accessToken
+    val refresh = load.refreshToken
+    BackHandler {
+        if (webView?.canGoBack() == true) {
+            webView?.goBack()
+        } else {
+            onClose()
+        }
+    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFFFAFAFA))
+            .statusBarsPadding()
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.White,
+                shadowElevation = 2.dp
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (webView?.canGoBack() == true) {
+                                webView?.goBack()
+                            } else {
+                                onClose()
+                            }
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color(0xFF2C2C2C)
+                        )
+                    }
+                    Text(
+                        "Gundu Ata – Virtual",
+                        color = Color(0xFF1C1C1C),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                }
+            }
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        webView = this
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        }
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        webViewClient = GunduataAuthWebViewClient(access, refresh)
+                        if (access.isNotEmpty()) {
+                            loadUrl(
+                                url,
+                                mapOf(
+                                    "Authorization" to "Bearer $access",
+                                    "X-Access-Token" to access
+                                )
+                            )
+                        } else {
+                            loadUrl(url)
+                        }
+                    }
+                },
+                onRelease = { v ->
+                    (v as? WebView)?.let { wv ->
+                        wv.stopLoading()
+                        wv.removeAllViews()
+                        wv.destroy()
+                    }
+                    webView = null
+                },
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+            )
+        }
+    }
 }
 
 /** Case-insensitive username -> password for offline demo accounts (not on the server). */
@@ -895,9 +1091,15 @@ private suspend fun postAuthLogin(context: Context, phone: String, password: Str
                     return@withContext LoginResult(false, apiError ?: "Login failed (HTTP ${resp.code})")
                 }
                 if (apiError != null) return@withContext LoginResult(false, apiError)
-                val access = j?.optString("access", "")?.ifBlank { j.optString("token", "") }.orEmpty()
+                val access = j?.optString("access", "")?.ifBlank { j?.optString("token", "") }.orEmpty()
+                val refresh: String? =
+                    j?.let { jo ->
+                        listOf("refresh", "refresh_token")
+                            .map { jo.optString(it, "") }
+                            .firstOrNull { it.isNotBlank() }
+                    }
                 if (access.isNotBlank()) {
-                    AuthTokenStore.save(context, access)
+                    AuthTokenStore.save(context, access, refresh)
                     return@withContext LoginResult(true)
                 }
                 LoginResult(false, "No token in response. Please contact support.")
@@ -1138,17 +1340,17 @@ private fun parseAuthBankDetailsBody(body: String): AuthBankDetailsApi? {
     val t = body.trim()
     if (t.isEmpty()) return null
     if (t.startsWith("[")) {
-        val arr = JSONArray(t)
-        if (arr.length() == 0) return null
+                val arr = JSONArray(t)
+                if (arr.length() == 0) return null
         return parseAuthBankDetailsBody(arr.getJSONObject(0).toString())
-    }
-    val j = JSONObject(t)
+            }
+                val j = JSONObject(t)
     val payload =
-        when {
-            j.has("data") && j.optJSONObject("data") != null -> j.getJSONObject("data")
-            (j.optJSONArray("results")?.length() ?: 0) > 0 -> j.getJSONArray("results").getJSONObject(0)
-            else -> j
-        }
+                when {
+                    j.has("data") && j.optJSONObject("data") != null -> j.getJSONObject("data")
+                    (j.optJSONArray("results")?.length() ?: 0) > 0 -> j.getJSONArray("results").getJSONObject(0)
+                    else -> j
+                }
 
     // New shape: bank_accounts[] + upi_accounts[]
     if (payload.has("bank_accounts") || payload.has("upi_accounts")) {
@@ -1869,24 +2071,24 @@ private fun JSONObject.optTrimmedUrlOrNull(vararg keys: String): String? {
 
 private fun parseSupportContactsResponseBody(text: String): SupportContactsUi? {
     if (text.isBlank()) return null
-    val root = JSONObject(text)
+                val root = JSONObject(text)
     val j = root.optJSONObject("data") ?: root.optJSONObject("contacts") ?: root
-    val wa =
-        j.optString("whatsapp_number", "")
-            .ifBlank { j.optString("whatsapp", "") }
+                val wa =
+                    j.optString("whatsapp_number", "")
+                        .ifBlank { j.optString("whatsapp", "") }
             .ifBlank { j.optString("support_whatsapp", "") }
             .ifBlank { j.optString("whatsapp_mobile", "") }
-            .trim()
-            .ifBlank { null }
-    val tg = j.optString("telegram", "").trim().ifBlank { null }
+                        .trim()
+                        .ifBlank { null }
+                val tg = j.optString("telegram", "").trim().ifBlank { null }
     return SupportContactsUi(
-        whatsappNumber = wa,
-        telegram = tg,
-        facebookUrl = j.optTrimmedUrlOrNull("facebook", "facebook_url"),
-        instagramUrl = j.optTrimmedUrlOrNull("instagram", "instagram_url"),
-        youtubeUrl = j.optTrimmedUrlOrNull("youtube", "youtube_url")
-    )
-}
+                    whatsappNumber = wa,
+                    telegram = tg,
+                    facebookUrl = j.optTrimmedUrlOrNull("facebook", "facebook_url"),
+                    instagramUrl = j.optTrimmedUrlOrNull("instagram", "instagram_url"),
+                    youtubeUrl = j.optTrimmedUrlOrNull("youtube", "youtube_url")
+                )
+            }
 
 private suspend fun fetchSupportContacts(): SupportContactsUi? =
     withContext(Dispatchers.IO) {
@@ -2206,13 +2408,13 @@ private fun MaintenanceModeScreen(initialHours: Int, initialMinutes: Int) {
                     .size(90.dp)
                     .background(OrangePrimary.copy(alpha = 0.12f), CircleShape),
                 contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.Warning,
-                    contentDescription = null,
+        ) {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = null,
                     tint = OrangePrimary.copy(alpha = iconAlpha),
                     modifier = Modifier.size(48.dp)
-                )
+            )
             }
             Spacer(Modifier.height(28.dp))
             Text(
@@ -2241,9 +2443,9 @@ private fun MaintenanceModeScreen(initialHours: Int, initialMinutes: Int) {
                     Modifier.padding(vertical = 24.dp, horizontal = 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
+            Text(
                         "Please come back in",
-                        fontSize = 13.sp,
+                fontSize = 13.sp,
                         color = Color.White.copy(alpha = 0.55f),
                         letterSpacing = 0.5.sp
                     )
@@ -2260,7 +2462,7 @@ private fun MaintenanceModeScreen(initialHours: Int, initialMinutes: Int) {
                             MaintenanceTimeUnit(value = sec, label = "SEC")
                         }
                     } else {
-                        Text(
+            Text(
                             "We'll be back shortly",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -2270,14 +2472,14 @@ private fun MaintenanceModeScreen(initialHours: Int, initialMinutes: Int) {
                 }
             }
             Spacer(Modifier.height(28.dp))
-            Text(
+                Text(
                 "Thank you for your patience \uD83D\uDE4F",
-                fontSize = 13.sp,
+                    fontSize = 13.sp,
                 color = Color.White.copy(alpha = 0.45f),
-                textAlign = TextAlign.Center
-            )
+                    textAlign = TextAlign.Center
+                )
+            }
         }
-    }
 }
 
 @Composable
@@ -3511,7 +3713,7 @@ fun CricketOddsScreen(onBack: () -> Unit) {
                             )
                             Spacer(Modifier.width(6.dp))
                         }
-                        Text(
+                Text(
                             text = label,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                             fontSize = 15.sp,
@@ -3850,8 +4052,8 @@ private fun FullscreenBetSlip(
             color = Color(0xFF1A1A1A)
         ) {
             Column(
-                Modifier
-                    .fillMaxWidth()
+                            Modifier
+                                .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .padding(top = 10.dp, bottom = 20.dp)
             ) {
@@ -3931,7 +4133,7 @@ private fun FullscreenBetSlip(
                                 .clickable { stakeText = v.toString() }
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Text(
+                            Text(
                                     if (v >= 1000) "${v / 1000}K" else "$v",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
@@ -3967,8 +4169,8 @@ private fun FullscreenBetSlip(
                         }
                     },
                     enabled = stake > 0 && !placing,
-                    modifier = Modifier
-                        .fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
                         .height(60.dp),
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -3993,12 +4195,12 @@ private fun FullscreenBetSlip(
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 18.sp,
                         letterSpacing = 0.5.sp
-                    )
+                            )
+                        }
+                    }
                 }
             }
         }
-    }
-}
 
 @Composable
 private fun CockfightBetHistoryPanel(onDismiss: () -> Unit) {
@@ -4017,9 +4219,9 @@ private fun CockfightBetHistoryPanel(onDismiss: () -> Unit) {
             .background(Color.Black.copy(alpha = 0.70f))
             .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { onDismiss() },
         contentAlignment = Alignment.BottomCenter
-    ) {
-        Surface(
-            modifier = Modifier
+        ) {
+            Surface(
+                        modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.88f)
                 .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {},
@@ -4092,11 +4294,11 @@ private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
     Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF252525)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                        verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+                    ) {
             Surface(shape = RoundedCornerShape(6.dp), color = sideColor.copy(alpha = 0.15f)) {
-                Text(
+                        Text(
                     bet.side,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     color = sideColor,
@@ -4109,7 +4311,7 @@ private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
                 Text(
                     "₹${bet.stake}  ×  ${bet.odds}",
                     color = Color.White,
-                    fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.Bold,
                     fontSize = 13.sp
                 )
                 Spacer(Modifier.height(2.dp))
@@ -4130,7 +4332,7 @@ private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
                     )
                 }
                 Spacer(Modifier.height(4.dp))
-                Text(
+                    Text(
                     if (bet.status == "WON") "+₹${bet.payoutAmount}" else "pot. ₹${bet.potentialPayout}",
                     color = if (bet.status == "WON") Color(0xFF4CAF50) else Color(0xFF666666),
                     fontWeight = FontWeight.Bold,
@@ -4334,27 +4536,27 @@ fun CockFightLiveScreen(
     Box(Modifier.fillMaxSize().background(CockDarkBg)) {
         Column(Modifier.fillMaxSize()) {
             if (!isVideoFullscreen) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                    }
-                    Text(
-                        "COCK FIGHT LIVE",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        letterSpacing = 0.6.sp
-                    )
-                    WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
-                }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            LazyColumn(
+            Text(
+                "COCK FIGHT LIVE",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                letterSpacing = 0.6.sp
+            )
+            WalletBalanceChip(onClick = onWallet, balanceText = cockfightWalletText, spacerBetweenIconAndText = 6.dp)
+        }
+        }
+        LazyColumn(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -4371,14 +4573,14 @@ fun CockFightLiveScreen(
                 // Stable key: fullscreen hides sibling items; without this the stream slot is recreated,
                 // onDispose forces portrait and drops fullscreen — user stays in portrait.
                 item(key = "cockfight_hls_stream") {
-                    CockFightHlsStream(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(248.dp)
-                            .padding(horizontal = 16.dp)
-                            .clip(RoundedCornerShape(10.dp)),
-                        onSurfaceClick = null,
-                        usePlaybackControls = true,
+                CockFightHlsStream(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(248.dp)
+                        .padding(horizontal = 16.dp)
+                        .clip(RoundedCornerShape(10.dp)),
+                    onSurfaceClick = null,
+                    usePlaybackControls = true,
                         useHomeLocalVideo = false,
                         useLiveLocalVideo = true,
                         disallowPlaybackSeeking = true,
@@ -4393,41 +4595,41 @@ fun CockFightLiveScreen(
                     )
                 }
                 if (!isVideoFullscreen) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
                                 .padding(horizontal = 16.dp)
                                 .padding(top = 12.dp, bottom = 10.dp)
-                                .height(52.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    Brush.horizontalGradient(
+                        .height(52.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            Brush.horizontalGradient(
                                         colors = listOf(
                                             CockMeronRed.copy(alpha = 0.95f),
                                             Color(0xFFFF6F00).copy(alpha = 0.85f),
                                             CockWalaBlue.copy(alpha = 0.95f)
                                         )
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "Meron  VS  Wala",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 20.sp
                             )
-                        }
-                    }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Meron  VS  Wala",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp
+                    )
+                }
+            }
                 }
                 if (!isVideoFullscreen) {
                     item(key = "cockfight_bet_cards") {
                         val meronWalaHeight = 180.dp
                         val drawHeight = 135.dp // 3/4 of Meron / Wala height
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
                                 .padding(horizontal = 16.dp)
                                 .padding(top = 22.dp, bottom = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -4459,7 +4661,7 @@ fun CockFightLiveScreen(
             }
 
             if (!isVideoFullscreen) {
-                Column(
+                        Column(
                     Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
@@ -4550,8 +4752,8 @@ fun CockFightLiveScreen(
                                     }
                                 },
                                 enabled = !placingCockfightBet && selectedCockfightOdd != null,
-                                modifier = Modifier
-                                    .weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
                                     .padding(horizontal = 6.dp)
                                     .height(48.dp),
                                 shape = RoundedCornerShape(12.dp),
@@ -4693,7 +4895,7 @@ private fun GunduLastResultColumn(
                 .border(borderW, borderC, cellShape),
             contentAlignment = Alignment.Center
         ) {
-            Text(
+                                Text(
                 round.toString(),
                 color = if (roundStyle == 1) Color(0xFF333333) else Color(0xFF444444),
                 fontSize = labelSize,
@@ -4782,11 +4984,11 @@ private fun GunduStripMiniPipFace(
                             }
                         }
                     }
+                            }
+                        }
+                    }
                 }
             }
-        }
-    }
-}
 
 @Composable
 private fun GundataRecentRoundsPanel(
@@ -4805,8 +5007,8 @@ private fun GundataRecentRoundsPanel(
         contentAlignment = Alignment.BottomCenter
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
                 .fillMaxHeight(0.52f)
                 .clickable(
                     indication = null,
@@ -4866,9 +5068,9 @@ private fun GundataBetHistoryPanel(onDismiss: () -> Unit) {
         bets = list
         errorMsg = err
         loading = false
-    }
-    Box(
-        modifier = Modifier
+                                    }
+                                    Box(
+                                        modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.70f))
             .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { onDismiss() },
@@ -4903,7 +5105,7 @@ private fun GundataBetHistoryPanel(onDismiss: () -> Unit) {
                     }
                 }
                 Divider(color = Color(0xFF333333), thickness = 1.dp)
-                Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(4.dp))
                 when {
                     loading -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = OrangePrimary)
@@ -5062,7 +5264,7 @@ private fun GundataLiveTopBar(
             ) {
                 Surface(
                     onClick = onBack,
-                    modifier = Modifier
+        modifier = Modifier
                         .align(Alignment.CenterStart)
                         .size(44.dp),
                     shape = RoundedCornerShape(10.dp),
@@ -5080,13 +5282,13 @@ private fun GundataLiveTopBar(
                 }
                 Row(
                     modifier = Modifier.align(Alignment.Center),
-                    verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
-                ) {
-                    Text(
+        ) {
+            Text(
                         "Gundata",
                         color = Color(0xFF1C1C1C),
-                        fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Bold,
                         fontSize = 19.sp
                     )
                     Spacer(Modifier.width(6.dp))
@@ -5146,6 +5348,8 @@ fun GundataLiveScreen(
     var regionTab by remember { mutableStateOf(0) }
     var selectedChip by remember { mutableStateOf(100) }
     var gunduVideoFullscreen by remember { mutableStateOf(false) }
+    /** In-app [WebView] for Virtual tab (not external browser). */
+    var gunduVirtualWebVisible by remember { mutableStateOf(false) }
     // Width/height of decoded video; black frame uses this so it matches the picture (replaces fixed 272dp).
     var gunduVideoAspect by remember { mutableStateOf(16f / 9f) }
     var placing by remember { mutableStateOf(false) }
@@ -5208,7 +5412,7 @@ fun GundataLiveScreen(
         }
     }
 
-    BackHandler {
+    BackHandler(enabled = !gunduVirtualWebVisible) {
         when {
             gunduVideoFullscreen -> gunduVideoFullscreen = false
             showGundataRecentRounds -> showGundataRecentRounds = false
@@ -5253,7 +5457,7 @@ fun GundataLiveScreen(
                     text = "  Deposit ₹500 and get ₹500 bonus on your first deposit!  " +
                         "Your first-deposit bonus — limited time.  " +
                         "Deposit ₹500 and get ₹500 bonus on your first deposit!  ",
-                    modifier = Modifier
+            modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 8.dp, horizontal = 0.dp)
                         .basicMarquee(
@@ -5293,8 +5497,8 @@ fun GundataLiveScreen(
                     )
                     Row(
                         Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp)
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
                             .background(Color(0xCC000000), RoundedCornerShape(4.dp))
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -5350,7 +5554,12 @@ fun GundataLiveScreen(
                     GunduRegionTabPill(
                         label = label,
                         selected = regionTab == idx,
-                        onClick = { regionTab = idx }
+                        onClick = {
+                            regionTab = idx
+                            if (idx == 1) {
+                                gunduVirtualWebVisible = true
+                            }
+                        }
                     )
                 }
             }
@@ -5399,9 +5608,9 @@ fun GundataLiveScreen(
                 ) {
                     chipOptions.forEach { c ->
                         val sel = selectedChip == c
-                        Surface(
+            Surface(
                             onClick = { selectedChip = c },
-                            shape = CircleShape,
+                shape = CircleShape,
                             color = if (sel) OrangePrimary else Color(0xFF3A3A3A),
                             border = if (sel) BorderStroke(2.dp, Color.White.copy(alpha = 0.5f)) else BorderStroke(1.dp, Color(0xFF2A2A2A))
                         ) {
@@ -5591,11 +5800,11 @@ fun GundataLiveScreen(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(12.dp)
-                    ) {
-                        Icon(
+            ) {
+                Icon(
                             Icons.Default.Close,
                             contentDescription = "Exit fullscreen",
-                            tint = Color.White,
+                    tint = Color.White,
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -5611,6 +5820,13 @@ fun GundataLiveScreen(
         if (showGundataBetHistory) {
             GundataBetHistoryPanel(onDismiss = { showGundataBetHistory = false })
         }
+        if (gunduVirtualWebVisible) {
+            val webLoad = remember(gunduVirtualWebVisible) { gunduataVirtualWebLoad() }
+            GunduataVirtualWebOverlay(
+                load = webLoad,
+                onClose = { gunduVirtualWebVisible = false }
+            )
+        }
     }
 }
 
@@ -5622,7 +5838,7 @@ private fun GundataDicePipFace(
 ) {
     // Light grey pips; diameter kept bold on the off-white face.
     val pip = Color(0xFFC2C2C2)
-    val pipDiameter = 11.dp
+    val pipDiameter = 9.dp
     val pips9: BooleanArray = when (value.coerceIn(1, 6)) {
         1 -> booleanArrayOf(false, false, false, false, true, false, false, false, false)
         2 -> booleanArrayOf(true, false, false, false, false, false, false, false, true)
@@ -5636,7 +5852,7 @@ private fun GundataDicePipFace(
             .aspectRatio(1f)
             .background(Color(0xFFF7F7F7), RoundedCornerShape(10.dp))
             .border(1.dp, Color(0xFFE0E0E0), RoundedCornerShape(8.dp))
-            .padding(3.dp)
+            .padding(2.5.dp)
     ) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
             for (r in 0..2) {
@@ -5704,7 +5920,7 @@ private fun GundataDiceCard(
             )
             Box(
                 Modifier
-                    .height(64.dp)
+                    .height(56.dp)
                     .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
@@ -6884,7 +7100,7 @@ private fun extractTransactionListArray(text: String): JSONArray {
         // plain array
         if (t.startsWith("[")) return JSONArray(t)
 
-        val root = JSONObject(t)
+                val root = JSONObject(t)
 
         // flat top-level array keys
         for (key in listOf("results", "data", "deposits", "withdrawals", "withdraws",
@@ -6932,11 +7148,11 @@ private fun parseDepositsResponse(text: String): List<DepositRecordApi> {
     if (t.isEmpty()) return emptyList()
     return try {
         val arr = extractTransactionListArray(t)
-        val out = ArrayList<DepositRecordApi>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            out.add(parseDepositRecord(o))
-        }
+    val out = ArrayList<DepositRecordApi>()
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        out.add(parseDepositRecord(o))
+    }
         out
     } catch (_: Exception) {
         emptyList()
@@ -6965,11 +7181,11 @@ private fun parseWithdrawalsResponse(text: String): List<WithdrawRecordApi> {
     if (t.isEmpty()) return emptyList()
     return try {
         val arr = extractTransactionListArray(t)
-        val out = ArrayList<WithdrawRecordApi>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            out.add(parseWithdrawRecord(o))
-        }
+    val out = ArrayList<WithdrawRecordApi>()
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        out.add(parseWithdrawRecord(o))
+    }
         out
     } catch (_: Exception) {
         emptyList()
@@ -7745,8 +7961,8 @@ private fun BankDetailLine(label: String, value: String, copyable: Boolean = fal
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 12.sp, color = Color.Gray)
-            Text(value, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
+        Text(label, fontSize = 12.sp, color = Color.Gray)
+        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
         }
         if (copyable) {
             IconButton(
@@ -8033,11 +8249,11 @@ private fun PaymentOptionsScreen(
                     Spacer(Modifier.height(12.dp))
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Surface(modifier = Modifier.size(200.dp), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 2.dp) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context).data(qrImageUrl).crossfade(true).build(),
-                                contentDescription = "QR Code",
+                        AsyncImage(
+                            model = ImageRequest.Builder(context).data(qrImageUrl).crossfade(true).build(),
+                            contentDescription = "QR Code",
                                 modifier = Modifier.fillMaxSize().padding(12.dp)
-                            )
+                        )
                         }
                     }
                     Spacer(Modifier.height(12.dp))
@@ -8375,20 +8591,20 @@ private fun WithdrawalDestinationCard(
                 }
                 bankRows.isNotEmpty() -> {
                     bankRows.forEachIndexed { index, bk ->
-                        Surface(
+                    Surface(
                             modifier = Modifier.fillMaxWidth().padding(bottom = if (index < bankRows.lastIndex) 10.dp else 0.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFFFFF8F0),
-                            border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
-                        ) {
-                            Column(Modifier.padding(14.dp)) {
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFFFF8F0),
+                        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
                                 Text(
                                     if (bankRows.size > 1) "Bank account ${index + 1}" else "Bank account",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
                                     color = WalletInkWarm
                                 )
-                                Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(6.dp))
                                 BankDetailLine("Account holder", bk.accountHolder)
                                 BankDetailLine("Bank name", bk.bankName)
                                 BankDetailLine("Account number", bk.accountNumber, copyable = true)
@@ -8440,20 +8656,20 @@ private fun WithdrawalDestinationCard(
                 }
                 upiRows.isNotEmpty() -> {
                     upiRows.forEachIndexed { index, vpa ->
-                        Surface(
+                    Surface(
                             modifier = Modifier.fillMaxWidth().padding(bottom = if (index < upiRows.lastIndex) 10.dp else 0.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFFFFF8F0),
-                            border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
-                        ) {
-                            Column(Modifier.padding(14.dp)) {
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFFFF8F0),
+                        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
                                 Text(
                                     if (upiRows.size > 1) "UPI ID ${index + 1}" else "UPI ID",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
                                     color = WalletInkWarm
                                 )
-                                Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(4.dp))
                                 Text(vpa, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
                             }
                         }
@@ -8942,20 +9158,20 @@ fun HomeScreen(
     }
     LaunchedEffect(Unit) { cockfightHighlights = fetchCockfightHighlights() }
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            TopHeader(
-                onDicePlayClick = onOpenGundata,
-                onCricketClick = onOpenCricket,
-                onCockfightClick = onOpenCockfight,
-                onWalletClick = onWalletClick,
-                walletBalanceText = walletBalanceText
-            )
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFFF5F5F5)),
-                state = listState
-            ) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        TopHeader(
+            onDicePlayClick = onOpenGundata,
+            onCricketClick = onOpenCricket,
+            onCockfightClick = onOpenCockfight,
+            onWalletClick = onWalletClick,
+            walletBalanceText = walletBalanceText
+        )
+        LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF5F5F5)),
+        state = listState
+    ) {
         item(key = "search_bar", contentType = "search_bar") {
             var searchQuery by remember { mutableStateOf("") }
             Surface(
@@ -9041,7 +9257,7 @@ fun HomeScreen(
             )
         }
         item(key = "bottom_spacer", contentType = "spacer") { Spacer(modifier = Modifier.height(16.dp)) }
-            }
+    }
         }
         playingCockfightHighlight?.let { h ->
             CockfightHighlightVideoDialog(
@@ -9143,14 +9359,14 @@ fun TopHeader(
                     )
                 }
                 Spacer(Modifier.width(10.dp))
-                Text(
-                    text = kokorokoWordmark,
-                    fontSize = 28.sp,
-                    letterSpacing = 0.5.sp,
-                    maxLines = 1,
+            Text(
+                text = kokorokoWordmark,
+                fontSize = 28.sp,
+                letterSpacing = 0.5.sp,
+                maxLines = 1,
                     modifier = Modifier.weight(1f, fill = false)
-                )
-            }
+            )
+        }
         }
         // Wallet on right — light chip so it reads on white bar
         Surface(
@@ -9416,10 +9632,10 @@ private fun CockFightHlsStream(
         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
             when {
                 useHomeLocalVideo -> {
-                    val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cock_fight}")
-                    setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
-                    repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
-                    volume = 0f
+                val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cock_fight}")
+                setMediaItem(androidx.media3.common.MediaItem.fromUri(uri))
+                repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
+                volume = 0f
                 }
                 useLiveLocalVideo -> {
                     val uri = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.cockfight_live}")
@@ -9428,9 +9644,9 @@ private fun CockFightHlsStream(
                     volume = 1f
                 }
                 else -> {
-                    setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(COCKFIGHT_LIVE_HLS_URL)))
-                    repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
-                    volume = 1f
+                setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(COCKFIGHT_LIVE_HLS_URL)))
+                repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
+                volume = 1f
                 }
             }
             prepare()
@@ -9618,8 +9834,8 @@ private fun CockFightHlsStream(
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                                 ) {
                                     Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = OrangePrimary, modifier = Modifier.size(16.dp))
                                     Text(walletBalance, color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -9645,8 +9861,8 @@ private fun CockFightHlsStream(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            LiveStreamBlinkingDot()
+                ) {
+                    LiveStreamBlinkingDot()
                             Text(
                                 "LIVE",
                                 color = Color(0xFFE53935),
@@ -9747,12 +9963,12 @@ private fun CockFightHlsStream(
                 Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
             }
             if (showFullscreenButton) {
-                IconButton(
-                    onClick = { enterFullscreen() },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
-                ) {
-                    Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.45f)) {
-                        Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
+            IconButton(
+                onClick = { enterFullscreen() },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+            ) {
+                Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.45f)) {
+                    Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.padding(8.dp))
                     }
                 }
             }
