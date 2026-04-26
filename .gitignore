@@ -35,3 +35,5 @@ kokoroko_decoded/
 sikwin_decoded/
 *_decoded/
 *.mp4
+# Bundled demo video for static mweb (cock fight / home stream)
+!mweb/assets/cock_fight.mp4
