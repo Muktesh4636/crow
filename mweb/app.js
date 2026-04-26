@@ -7,7 +7,8 @@
   const ALL_SCREENS = [...TAB_IDS, "cockfight", "gundu", "login", "register"];
   const NAV_HASHES = ALL_SCREENS;
   let lastWalletData = null;
-  let cockHls = null;
+  let cockfightLiveBound = false;
+  let cockfightMaxTime = 0;
   let lastBankWithdraw = { upi: "", bankAcc: "", bankIfsc: "" };
 
   function balanceNumOnly(s) {
@@ -28,12 +29,17 @@
     if (mainBal !== undefined && gbal) gbal.textContent = mainBal === "—" ? "—" : K ? K.formatRupeeBalanceForDisplay(mainBal) : mainBal;
   }
   function refreshHeaderAuth() {
-    const sign = document.getElementById("header-signin-pill");
+    const authPills = document.getElementById("header-auth-pills");
     const wall = document.getElementById("header-wallet-pill");
-    if (!K) return;
-    const ok = K.isAuthed();
-    if (sign) sign.hidden = ok;
-    if (wall) wall.hidden = !ok;
+    const bottomNavWallet = document.getElementById("bottom-nav-wallet");
+    const authed = !!(K && K.isAuthed());
+    /* Header + bottom nav wallet only for a real server session, not unauthenticated or local demo (svs/svs). */
+    const showWalletPill = authed && K && !K.isLocalDemo();
+    if (authPills) authPills.hidden = showWalletPill;
+    if (wall) wall.hidden = !showWalletPill;
+    if (bottomNavWallet) bottomNavWallet.hidden = !showWalletPill;
+    document.documentElement.dataset.auth = authed ? "1" : "0";
+    document.documentElement.dataset.headerWallet = showWalletPill ? "1" : "0";
   }
   async function refreshAllBalances() {
     refreshHeaderAuth();
@@ -98,28 +104,46 @@
     }
     return m[0].id || 1;
   }
-  function attachCockfightHls() {
+  /** #cockfight only: local MP4 (assets/cockfight_live_stream.mp4) — no HLS, no controls, no forward seek, no pause. */
+  function setupCockfightLiveStream() {
     const video = document.getElementById("cockfight-video");
     if (!video) return;
-    const url = K ? K.COCKFIGHT_HLS() : "https://fight.pravoo.in/hls/live/stream/index.m3u8";
-    const HlsRef = typeof Hls !== "undefined" ? Hls : window.Hls;
-    if (HlsRef && HlsRef.isSupported && HlsRef.isSupported()) {
-      if (cockHls) {
-        cockHls.destroy();
-        cockHls = null;
-      }
-      cockHls = new HlsRef();
-      cockHls.loadSource(url);
-      cockHls.attachMedia(video);
-      if (location.hash === "#cockfight") video.play().catch(() => {});
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
-      if (location.hash === "#cockfight") video.play().catch(() => {});
-    } else {
-      const mp4 = video.querySelector('source[type="video/mp4"]');
-      if (mp4 && mp4.getAttribute("src")) {
-        video.src = mp4.getAttribute("src");
-      }
+    const src = "assets/cockfight_live_stream.mp4";
+    if (video.getAttribute("data-cf-wired") !== "1") {
+      video.replaceChildren();
+      video.src = src;
+      video.setAttribute("data-cf-wired", "1");
+    }
+    if (!cockfightLiveBound) {
+      cockfightLiveBound = true;
+      video.addEventListener("timeupdate", () => {
+        if (location.hash !== "#cockfight") return;
+        if (video.currentTime + 0.3 < cockfightMaxTime) {
+          cockfightMaxTime = 0;
+        }
+        cockfightMaxTime = Math.max(cockfightMaxTime, video.currentTime);
+      });
+      video.addEventListener("seeking", () => {
+        if (location.hash !== "#cockfight") return;
+        if (video.currentTime > cockfightMaxTime + 0.2) {
+          try {
+            video.currentTime = cockfightMaxTime;
+          } catch {}
+        }
+      });
+      video.addEventListener("pause", () => {
+        if (location.hash !== "#cockfight") return;
+        if (!document.getElementById("cockfight-panel") || document.getElementById("cockfight-panel").hidden) return;
+        video.play().catch(() => {});
+      });
+      video.addEventListener("stalled", () => {
+        if (location.hash === "#cockfight") video.play().catch(() => {});
+      });
+      video.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+    if (location.hash === "#cockfight") {
+      video.muted = true;
+      video.play().catch(() => {});
     }
   }
   function goTab(name) {
@@ -142,11 +166,10 @@
       location.replace("#login");
       return;
     }
-    if (K && (h === "wallet" || h === "profile") && !K.isAuthed()) {
-      if (h !== "login" && h !== "register") {
-        location.replace("#login");
-        return;
-      }
+    /* Wallet needs auth for real money; Profile & Settings UI matches APK and is viewable for layout (API actions still need sign-in). */
+    if (K && h === "wallet" && !K.isAuthed()) {
+      location.replace("#login");
+      return;
     }
     const key = ALL_SCREENS.includes(h) ? h : "home";
     if (h !== key && !ALL_SCREENS.includes(h)) {
@@ -154,8 +177,11 @@
       return;
     }
     document.documentElement.dataset.tab = key;
-    if (K) {
-      document.documentElement.dataset.auth = K.isAuthed() ? "1" : "0";
+    if (key !== "home") {
+      closeLiveVideoFullscreen();
+    }
+    if (key !== "cockfight") {
+      closeCockfightFullscreen();
     }
     if (key === "profile") {
       showProfileView("main");
@@ -204,7 +230,7 @@
       }
     }
     if (key === "cockfight") {
-      setTimeout(attachCockfightHls, 0);
+      setTimeout(setupCockfightLiveStream, 0);
     }
     refreshHeaderAuth();
     refreshAllBalances();
@@ -246,13 +272,14 @@
 
   const live = document.getElementById("live-on");
   const offMsg = document.getElementById("live-off");
-  const liveCard = document.getElementById("live-card");
+  const liveCardWrap = document.getElementById("live-card-wrap");
   const liveVideo = document.getElementById("live-video");
-  if (live && offMsg && liveCard) {
+  if (live && offMsg && liveCardWrap) {
     const sync = () => {
       const on = live.checked;
       offMsg.hidden = on;
-      liveCard.hidden = !on;
+      liveCardWrap.hidden = !on;
+      if (!on) closeLiveVideoFullscreen();
       if (liveVideo) {
         if (on) {
           liveVideo.play().catch(() => {});
@@ -264,6 +291,118 @@
     live.addEventListener("change", sync);
     sync();
   }
+
+  function closeLiveVideoFullscreen() {
+    const fsRoot = document.getElementById("live-fullscreen");
+    const vIn = document.getElementById("live-video");
+    const vFs = document.getElementById("live-video-fs");
+    if (!fsRoot || fsRoot.hidden) return;
+    fsRoot.hidden = true;
+    if (vIn && vFs) {
+      vIn.currentTime = vFs.currentTime || 0;
+      vFs.pause();
+    }
+    document.body.style.overflow = "";
+    const on = document.getElementById("live-on")?.checked;
+    if (on && document.documentElement.dataset.tab === "home" && vIn) {
+      vIn.play().catch(() => {});
+    }
+  }
+
+  function openLiveVideoFullscreen() {
+    const fsRoot = document.getElementById("live-fullscreen");
+    const vIn = document.getElementById("live-video");
+    const vFs = document.getElementById("live-video-fs");
+    if (!fsRoot || !vIn || !vFs) return;
+    if (!document.getElementById("live-on")?.checked) return;
+    fsRoot.hidden = false;
+    vIn.pause();
+    const src = vIn.querySelector("source");
+    vFs.muted = true;
+    vFs.loop = true;
+    vFs.poster = vIn.poster || "";
+    if (src && src.src) {
+      let s = vFs.querySelector("source");
+      if (!s) {
+        s = document.createElement("source");
+        vFs.appendChild(s);
+      }
+      s.src = src.src;
+      s.type = src.type || "video/mp4";
+      vFs.load();
+    }
+    vFs.currentTime = vIn.currentTime || 0;
+    vFs.play().catch(() => {});
+    document.body.style.overflow = "hidden";
+  }
+
+  function closeCockfightFullscreen() {
+    const fsRoot = document.getElementById("cockfight-fullscreen");
+    const vIn = document.getElementById("cockfight-video");
+    const vFs = document.getElementById("cockfight-video-fs");
+    if (!fsRoot || fsRoot.hidden) return;
+    fsRoot.hidden = true;
+    if (vIn && vFs) {
+      vIn.currentTime = vFs.currentTime || 0;
+      vFs.pause();
+      vFs.removeAttribute("src");
+      vFs.replaceChildren();
+    }
+    document.body.style.overflow = "";
+    if (document.documentElement.dataset.tab === "cockfight" && vIn) {
+      vIn.play().catch(() => {});
+    }
+  }
+
+  function openCockfightFullscreen() {
+    const fsRoot = document.getElementById("cockfight-fullscreen");
+    const vIn = document.getElementById("cockfight-video");
+    const vFs = document.getElementById("cockfight-video-fs");
+    if (!fsRoot || !vIn || !vFs) return;
+    if (document.documentElement.dataset.tab !== "cockfight") return;
+    fsRoot.hidden = false;
+    vIn.pause();
+    const fromSrc = vIn.querySelector("source");
+    const url =
+      (vIn.currentSrc && vIn.currentSrc.replace(/\s/g, "")) ||
+      (vIn.src && vIn.src.replace(/\s/g, "")) ||
+      (fromSrc && fromSrc.src) ||
+      "assets/cockfight_live_stream.mp4";
+    vFs.replaceChildren();
+    vFs.src = url;
+    vFs.muted = true;
+    vFs.loop = true;
+    vFs.poster = vIn.poster || "";
+    vFs.load();
+    vFs.currentTime = vIn.currentTime || 0;
+    vFs.play().catch(() => {});
+    document.body.style.overflow = "hidden";
+  }
+
+  document.getElementById("live-video-max")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openLiveVideoFullscreen();
+  });
+  document.getElementById("live-fs-close")?.addEventListener("click", () => {
+    closeLiveVideoFullscreen();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const lfs = document.getElementById("live-fullscreen");
+    if (lfs && !lfs.hidden) closeLiveVideoFullscreen();
+    const cfs = document.getElementById("cockfight-fullscreen");
+    if (cfs && !cfs.hidden) closeCockfightFullscreen();
+  });
+
+  document.getElementById("cockfight-video-max")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openCockfightFullscreen();
+  });
+  document.getElementById("cockfight-fs-close")?.addEventListener("click", () => {
+    closeCockfightFullscreen();
+  });
 
   window.addEventListener("kokoroko:auth", () => {
     refreshAllBalances();
@@ -480,219 +619,6 @@
       });
     }
   }
-  const txUi = {
-    kind: "deposit",
-    filter: "all",
-    deposits: [],
-    withdraws: [],
-    depositErr: null,
-    withdrawErr: null
-  };
-
-  function txEscapeHtml(s) {
-    if (s == null) return "";
-    const d = document.createElement("div");
-    d.textContent = String(s);
-    return d.innerHTML;
-  }
-
-  function formatIsoDateTimeShort(iso) {
-    if (!iso || !String(iso).trim()) return "—";
-    try {
-      let s = String(iso).trim();
-      if (s.includes("T") && !/Z$/i.test(s) && !/[+-]\d\d:?\d\d$/.test(s)) {
-        s = s.replace(/\.\d+/, "") + "Z";
-      }
-      const d = new Date(s);
-      if (isNaN(d.getTime())) return iso;
-      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const dd = String(d.getDate()).padStart(2, "0");
-      const mon = months[d.getMonth()];
-      const y = d.getFullYear();
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mm = String(d.getMinutes()).padStart(2, "0");
-      return dd + " " + mon + " " + y + ", " + hh + ":" + mm;
-    } catch {
-      return iso;
-    }
-  }
-
-  function matchesTxStatusFilter(status, filterKey) {
-    if (filterKey === "all") return true;
-    const s = String(status || "")
-      .trim()
-      .toUpperCase();
-    const isSuccess =
-      ["SUCCESS", "COMPLETED", "COMPLETE", "APPROVED", "SUCCESSFUL", "DONE", "CONFIRMED", "PAID", "PROCESSED"].indexOf(s) >= 0;
-    const isFailed =
-      ["FAILED", "FAILURE", "REJECTED", "CANCELLED", "CANCELED", "DECLINED"].indexOf(s) >= 0;
-    if (filterKey === "success") return isSuccess;
-    if (filterKey === "failed") return isFailed;
-    return true;
-  }
-
-  function txStatusTier(status) {
-    const s = String(status || "")
-      .trim()
-      .toUpperCase();
-    if (
-      ["SUCCESS", "COMPLETED", "COMPLETE", "APPROVED", "SUCCESSFUL", "DONE", "CONFIRMED", "PAID", "PROCESSED"].indexOf(s) >= 0
-    )
-      return "success";
-    if (["FAILED", "FAILURE", "REJECTED", "CANCELLED", "CANCELED", "DECLINED"].indexOf(s) >= 0) return "failed";
-    return "pending";
-  }
-
-  function txDepositScreenshotUrl(d) {
-    if (!d || typeof d !== "object") return "";
-    const u = d.screenshot_url || d.screenshot || d.proof_url || "";
-    return String(u).trim();
-  }
-
-  function syncTxRecordPills() {
-    document.querySelectorAll(".tx-kind-pill").forEach((b) => {
-      const on = b.getAttribute("data-tx-kind") === txUi.kind;
-      b.classList.toggle("tx-kind-pill--on", on);
-      b.setAttribute("aria-selected", on ? "true" : "false");
-    });
-    document.querySelectorAll(".tx-filter-pill").forEach((b) => {
-      const on = b.getAttribute("data-tx-filter") === txUi.filter;
-      b.classList.toggle("tx-filter-pill--on", on);
-      b.setAttribute("aria-selected", on ? "true" : "false");
-    });
-    const statusLabelEl = document.getElementById("tx-status-section-label");
-    if (statusLabelEl) {
-      statusLabelEl.textContent = txUi.kind === "deposit" ? "Deposit status" : "Withdraw status";
-    }
-  }
-
-  function renderTxRecordsUi() {
-    const loadingEl = document.getElementById("tx-loading");
-    const errBox = document.getElementById("tx-error");
-    const errMsg = document.getElementById("tx-error-msg");
-    const emptyEl = document.getElementById("tx-empty");
-    const cardsEl = document.getElementById("tx-cards");
-    if (!cardsEl) return;
-
-    syncTxRecordPills();
-
-    if (loadingEl && !loadingEl.hidden) {
-      return;
-    }
-
-    const err = txUi.kind === "deposit" ? txUi.depositErr : txUi.withdrawErr;
-    if (err) {
-      if (errBox) errBox.hidden = false;
-      if (errMsg) errMsg.textContent = err;
-      if (emptyEl) emptyEl.hidden = true;
-      cardsEl.innerHTML = "";
-      return;
-    }
-    if (errBox) errBox.hidden = true;
-
-    const raw = txUi.kind === "deposit" ? txUi.deposits : txUi.withdraws;
-    const rows = (raw || []).filter((r) => matchesTxStatusFilter(r && r.status, txUi.filter));
-
-    const statusPhrase =
-      txUi.filter === "all" ? "all statuses" : txUi.filter === "success" ? "successful" : "failed";
-    const kindWord = txUi.kind === "deposit" ? "deposit" : "withdraw";
-
-    if (!rows.length) {
-      if (emptyEl) {
-        emptyEl.hidden = false;
-        emptyEl.textContent = "No " + kindWord + " transactions for " + statusPhrase + " yet.";
-      }
-      cardsEl.innerHTML = "";
-      return;
-    }
-    if (emptyEl) emptyEl.hidden = true;
-
-    const html = rows
-      .map((r) => {
-        const st = (r && r.status) || "";
-        const tier = txStatusTier(st);
-        const amt =
-          txUi.kind === "deposit"
-            ? r.amount != null
-              ? String(r.amount)
-              : ""
-            : r.amount != null
-              ? String(r.amount)
-              : "";
-        let block =
-          '<article class="tx-card"><div class="tx-card__row"><span class="tx-card__amt">₹' +
-          txEscapeHtml(amt) +
-          '</span><span class="tx-card__status tx-card__status--' +
-          tier +
-          '">' +
-          txEscapeHtml(st || "—") +
-          "</span></div>";
-        block += '<div class="tx-card__date">' + txEscapeHtml(formatIsoDateTimeShort(r.created_at)) + "</div>";
-        if (txUi.kind === "deposit") {
-          if (r.payment_method != null && r.payment_method !== "") {
-            block +=
-              '<p class="tx-card__meta">Payment method #' + txEscapeHtml(String(r.payment_method)) + "</p>";
-          }
-          const shot = txDepositScreenshotUrl(r);
-          if (shot) {
-            block +=
-              '<a class="tx-card__shot" href="' +
-              txEscapeHtml(shot) +
-              '" target="_blank" rel="noopener noreferrer">View payment screenshot</a>';
-          }
-        } else {
-          const wm = (r.withdrawal_method && String(r.withdrawal_method).trim()) || "";
-          const wd = (r.withdrawal_details && String(r.withdrawal_details).trim()) || "";
-          if (wm || wd) {
-            const line = wm + (wm && wd ? " · " : "") + wd;
-            block += '<p class="tx-card__dest">' + txEscapeHtml(line) + "</p>";
-          }
-          const proc = r.processed_by_name || r.processed_by;
-          if (proc) {
-            block += '<p class="tx-card__proc">Processed by: ' + txEscapeHtml(proc) + "</p>";
-          }
-        }
-        if (r.admin_note && String(r.admin_note).trim()) {
-          block += '<p class="tx-card__note">Note: ' + txEscapeHtml(String(r.admin_note).trim()) + "</p>";
-        }
-        block += "</article>";
-        return block;
-      })
-      .join("");
-    cardsEl.innerHTML = html;
-  }
-
-  async function loadTxRecords() {
-    if (!K || !K.isAuthed()) return;
-    txUi.kind = "deposit";
-    txUi.filter = "all";
-    txUi.deposits = [];
-    txUi.withdraws = [];
-    txUi.depositErr = null;
-    txUi.withdrawErr = null;
-    const loadingEl = document.getElementById("tx-loading");
-    const errBox = document.getElementById("tx-error");
-    const emptyEl = document.getElementById("tx-empty");
-    const cardsEl = document.getElementById("tx-cards");
-    const showSpinner = !K.isLocalDemo();
-
-    syncTxRecordPills();
-    if (cardsEl) cardsEl.innerHTML = "";
-    if (errBox) errBox.hidden = true;
-    if (emptyEl) emptyEl.hidden = true;
-    if (loadingEl) loadingEl.hidden = !showSpinner;
-
-    const { data: deps, error: eD } = await K.fetchDepositsMine();
-    const { data: wdrs, error: eW } = await K.fetchWithdrawsMine();
-
-    txUi.deposits = Array.isArray(deps) ? deps : [];
-    txUi.withdraws = Array.isArray(wdrs) ? wdrs : [];
-    txUi.depositErr = eD || null;
-    txUi.withdrawErr = eW || null;
-
-    if (loadingEl) loadingEl.hidden = true;
-    renderTxRecordsUi();
-  }
   (async function applySupportContacts() {
     if (!K) return;
     const c = await K.fetchSupportContacts();
@@ -740,33 +666,11 @@
         if (name) {
           showProfileView(name);
           if (name === "details") loadProfileForm();
-          if (name === "tx") loadTxRecords();
         }
         return;
-      }
-      const kindPill = e.target.closest(".tx-kind-pill");
-      if (kindPill && e.target.closest("#tx-records-root")) {
-        const kind = kindPill.getAttribute("data-tx-kind");
-        if (kind) {
-          txUi.kind = kind;
-          renderTxRecordsUi();
-        }
-        return;
-      }
-      const filterPill = e.target.closest(".tx-filter-pill");
-      if (filterPill && e.target.closest("#tx-records-root")) {
-        const f = filterPill.getAttribute("data-tx-filter");
-        if (f) {
-          txUi.filter = f;
-          renderTxRecordsUi();
-        }
       }
     });
   }
-
-  document.getElementById("tx-retry-btn")?.addEventListener("click", () => {
-    loadTxRecords();
-  });
 
   document.getElementById("profile-logout-btn")?.addEventListener("click", async () => {
     if (!window.confirm("Log out?")) return;

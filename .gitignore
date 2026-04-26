@@ -37,3 +37,4 @@ sikwin_decoded/
 *.mp4
 # Bundled demo video for static mweb (cock fight / home stream)
 !mweb/assets/cock_fight.mp4
+!mweb/assets/cockfight_live_stream.mp4
