@@ -9,6 +9,7 @@
   let lastWalletData = null;
   let cockfightLiveBound = false;
   let cockfightMaxTime = 0;
+  let cockfightDialogOpen = false;
   let lastBankWithdraw = { upi: "", bankAcc: "", bankIfsc: "" };
 
   function balanceNumOnly(s) {
@@ -133,6 +134,7 @@
       });
       video.addEventListener("pause", () => {
         if (location.hash !== "#cockfight") return;
+        if (cockfightDialogOpen) return;
         if (!document.getElementById("cockfight-panel") || document.getElementById("cockfight-panel").hidden) return;
         video.play().catch(() => {});
       });
@@ -341,46 +343,75 @@
   }
 
   function closeCockfightFullscreen() {
-    const fsRoot = document.getElementById("cockfight-fullscreen");
-    const vIn = document.getElementById("cockfight-video");
-    const vFs = document.getElementById("cockfight-video-fs");
-    if (!fsRoot || fsRoot.hidden) return;
-    fsRoot.hidden = true;
-    if (vIn && vFs) {
-      vIn.currentTime = vFs.currentTime || 0;
-      vFs.pause();
-      vFs.removeAttribute("src");
-      vFs.replaceChildren();
+    /* Exit native fullscreen if active */
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
     }
-    document.body.style.overflow = "";
+    const fsRoot = document.getElementById("cockfight-fullscreen");
+    const vFs = document.getElementById("cockfight-video-fs");
+    const vIn = document.getElementById("cockfight-video");
+    cockfightDialogOpen = false;
+    if (fsRoot && !fsRoot.hidden) {
+      fsRoot.hidden = true;
+      if (vFs) {
+        vFs.pause();
+        vFs.removeAttribute("src");
+        vFs.replaceChildren();
+      }
+      document.body.style.overflow = "";
+    }
     if (document.documentElement.dataset.tab === "cockfight" && vIn) {
+      vIn.muted = true;
       vIn.play().catch(() => {});
     }
   }
 
   function openCockfightFullscreen() {
-    const fsRoot = document.getElementById("cockfight-fullscreen");
     const vIn = document.getElementById("cockfight-video");
-    const vFs = document.getElementById("cockfight-video-fs");
-    if (!fsRoot || !vIn || !vFs) return;
+    if (!vIn) return;
     if (document.documentElement.dataset.tab !== "cockfight") return;
-    fsRoot.hidden = false;
-    vIn.pause();
-    const fromSrc = vIn.querySelector("source");
-    const url =
-      (vIn.currentSrc && vIn.currentSrc.replace(/\s/g, "")) ||
-      (vIn.src && vIn.src.replace(/\s/g, "")) ||
-      (fromSrc && fromSrc.src) ||
-      "assets/cockfight_live_stream.mp4";
-    vFs.replaceChildren();
-    vFs.src = url;
-    vFs.muted = true;
-    vFs.loop = true;
-    vFs.poster = vIn.poster || "";
-    vFs.load();
-    vFs.currentTime = vIn.currentTime || 0;
-    vFs.play().catch(() => {});
-    document.body.style.overflow = "hidden";
+
+    /* Prefer native browser fullscreen on the existing video — zero flash */
+    const reqFs = vIn.requestFullscreen || vIn.webkitRequestFullscreen;
+    if (reqFs) {
+      reqFs.call(vIn).catch(() => {
+        /* If native FS is blocked (e.g. iOS), fall back to overlay dialog */
+        openCockfightFsDialog();
+      });
+      return;
+    }
+    openCockfightFsDialog();
+  }
+
+  function openCockfightFsDialog() {
+    const fsRoot = document.getElementById("cockfight-fullscreen");
+    const vIn  = document.getElementById("cockfight-video");
+    const vFs  = document.getElementById("cockfight-video-fs");
+    if (!fsRoot || !vIn || !vFs) return;
+
+    cockfightDialogOpen = true;
+    const url = (vIn.currentSrc || "").trim() || "assets/cockfight_live_stream.mp4";
+    /* Only reload if src changed */
+    if (vFs.src !== url) {
+      vFs.replaceChildren();
+      vFs.src = url;
+      vFs.muted = true;
+      vFs.loop = true;
+      vFs.poster = vIn.poster || "";
+    }
+    const syncAndShow = () => {
+      try { vFs.currentTime = vIn.currentTime || 0; } catch {}
+      vIn.pause();
+      fsRoot.hidden = false;
+      document.body.style.overflow = "hidden";
+      vFs.play().catch(() => {});
+    };
+    if (vFs.readyState >= 1) {
+      syncAndShow();
+    } else {
+      vFs.addEventListener("loadedmetadata", syncAndShow, { once: true });
+      vFs.load();
+    }
   }
 
   document.getElementById("live-video-max")?.addEventListener("click", (e) => {
@@ -406,6 +437,27 @@
   });
   document.getElementById("cockfight-fs-close")?.addEventListener("click", () => {
     closeCockfightFullscreen();
+  });
+  /* Resume main video when native fullscreen exits */
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) {
+      cockfightDialogOpen = false;
+      const vIn = document.getElementById("cockfight-video");
+      if (document.documentElement.dataset.tab === "cockfight" && vIn) {
+        vIn.muted = true;
+        vIn.play().catch(() => {});
+      }
+    }
+  });
+  document.addEventListener("webkitfullscreenchange", () => {
+    if (!document.webkitFullscreenElement) {
+      cockfightDialogOpen = false;
+      const vIn = document.getElementById("cockfight-video");
+      if (document.documentElement.dataset.tab === "cockfight" && vIn) {
+        vIn.muted = true;
+        vIn.play().catch(() => {});
+      }
+    }
   });
 
   window.addEventListener("kokoroko:auth", () => {
