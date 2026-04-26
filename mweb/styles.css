@@ -556,6 +556,17 @@ html[data-tab="gundu"] .content > .panel[data-panel="gundu"] {
   min-width: 0;
   padding-left: 8px;
 }
+a.brand--home {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+a.brand--home:focus-visible {
+  outline: 2px solid var(--orange-primary);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
 
 .brand__logo {
   width: 44px;
@@ -896,27 +907,21 @@ a.video-card--link {
   left: max(14px, env(safe-area-inset-left, 0px));
   z-index: 2;
 }
-/* Cockfight stream: same overlay, slightly larger tap target on video */
+/* Cockfight stream: same minimal style as default badge */
 .live-stream-badge--cockfight {
-  top: 10px;
-  left: 10px;
+  top: 8px;
+  left: 8px;
   z-index: 3;
-  padding: 4px 10px 4px 8px;
-  gap: 8px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
 }
 .live-stream-badge--cockfight .live-stream-badge__dot {
-  width: 9px;
-  height: 9px;
+  width: 6px;
+  height: 6px;
 }
 .live-stream-badge--cockfight .live-stream-badge__text {
-  font-size: 13px;
-  font-weight: 900;
-  color: #e53935;
-  letter-spacing: 0.12em;
+  font-size: 10px;
+  font-weight: 800;
+  color: #ff5252;
+  letter-spacing: 0.1em;
 }
 .live-stream-badge__dot {
   width: 6px;
@@ -2015,6 +2020,14 @@ a.profile-menu__row {
   border-radius: 8px;
   flex-shrink: 0;
 }
+.cockfight-top__logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
 .cockfight-ttl {
   margin: 0;
   font-size: 15px;
@@ -2023,6 +2036,19 @@ a.profile-menu__row {
   color: #fff;
   text-align: center;
   flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+a.cockfight-ttl:hover,
+a.cockfight-ttl:focus-visible {
+  color: #ffcc80;
+  outline: none;
+}
+a.cockfight-ttl:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .cockfight-balancechip {
   display: flex;

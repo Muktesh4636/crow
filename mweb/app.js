@@ -247,15 +247,19 @@
     });
   });
 
-  document.querySelectorAll(".wallet-pill[data-nav], .game-tile[data-nav]").forEach((el) => {
-    const n = el.getAttribute("data-nav");
-    if (n && NAV_HASHES.includes(n)) {
-      el.addEventListener("click", (e) => {
-        e.preventDefault();
-        goTab(n);
-      });
-    }
-  });
+  document
+    .querySelectorAll(
+      ".wallet-pill[data-nav], .game-tile[data-nav], a.brand--home[data-nav], a.cockfight-tap-home[data-nav]"
+    )
+    .forEach((el) => {
+      const n = el.getAttribute("data-nav");
+      if (n && NAV_HASHES.includes(n)) {
+        el.addEventListener("click", (e) => {
+          e.preventDefault();
+          goTab(n);
+        });
+      }
+    });
 
   const search = document.querySelector(".search__input");
   const clear = document.querySelector(".search__clear");
@@ -1184,19 +1188,8 @@
   setPwToggle(document.getElementById("login-pass"), document.getElementById("login-pass-toggle"));
   setPwToggle(document.getElementById("reg-pass"), document.getElementById("reg-pass-toggle"));
 
-  let otpSendCount = 0;
-  document.getElementById("reg-otp-btn")?.addEventListener("click", () => {
-    const first = otpSendCount === 0;
-    otpSendCount++;
-    const btn = document.getElementById("reg-otp-btn");
-    if (btn) btn.textContent = "Resend";
-    window.alert(first ? "Verification code sent (demo)" : "Code resent (demo)");
-  });
   document.getElementById("reg-phone")?.addEventListener("input", (e) => {
     e.target.value = e.target.value.replace(/\D/g, "").slice(0, 15);
-  });
-  document.getElementById("reg-otp")?.addEventListener("input", (e) => {
-    e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
   });
 
   document.getElementById("login-form")?.addEventListener("submit", async (e) => {
@@ -1205,38 +1198,35 @@
     const p = document.getElementById("login-pass");
     const err = document.getElementById("login-err");
     const btn = document.getElementById("login-submit");
-    if (!K || !u || !p) return;
-    if (!u.value.trim()) {
-      if (err) {
-        err.textContent = "Please enter your phone number.";
-        err.hidden = false;
-      }
-      return;
+    const btnTxt = btn && btn.querySelector(".ap-pill__txt");
+    function showErr(msg) {
+      if (err) { err.textContent = msg; err.hidden = false; }
     }
-    if (!p.value) {
-      if (err) {
-        err.textContent = "Please enter your password.";
-        err.hidden = false;
-      }
-      return;
+    function setBusy(busy) {
+      if (!btn) return;
+      btn.disabled = busy;
+      btn.setAttribute("aria-busy", busy ? "true" : "false");
+      if (btnTxt) btnTxt.textContent = busy ? "Logging in…" : "Login";
     }
+    if (!K) { showErr("Page error — please refresh the page."); return; }
+    if (!u || !p) return;
+    if (!u.value.trim()) { showErr("Please enter your phone number or username."); return; }
+    if (!p.value) { showErr("Please enter your password."); return; }
     if (err) err.hidden = true;
-    if (btn) {
-      btn.disabled = true;
-      btn.setAttribute("aria-busy", "true");
-    }
-    const res = await K.login(u.value, p.value);
-    if (btn) {
-      btn.disabled = false;
-      btn.setAttribute("aria-busy", "false");
-    }
-    if (res.ok) {
-      location.hash = "home";
-      u.value = "";
-      p.value = "";
-    } else if (err) {
-      err.textContent = res.error || "Sign in failed";
-      err.hidden = false;
+    setBusy(true);
+    try {
+      const res = await K.login(u.value, p.value);
+      setBusy(false);
+      if (res.ok) {
+        location.hash = "home";
+        u.value = "";
+        p.value = "";
+      } else {
+        showErr(res.error || "Sign in failed. Check your credentials.");
+      }
+    } catch (ex) {
+      setBusy(false);
+      showErr("Network error — please try again.");
     }
   });
 
@@ -1245,25 +1235,30 @@
     const elU = document.getElementById("reg-username");
     const elP = document.getElementById("reg-phone");
     const elPw = document.getElementById("reg-pass");
-    const elO = document.getElementById("reg-otp");
     const err = document.getElementById("register-err");
+    const regBtn = document.getElementById("register-submit");
+    const regBtnTxt = regBtn && regBtn.querySelector(".ap-pill__txt--solo");
     if (!K || !elU || !elP || !elPw) return;
     if (err) err.hidden = true;
+    if (regBtn) { regBtn.disabled = true; if (regBtnTxt) regBtnTxt.textContent = "Creating…"; }
     const res = await K.register({
       username: elU.value,
       phone: elP.value,
-      password: elPw.value,
-      otp: elO && elO.value
+      password: elPw.value
     });
+    if (regBtn) { regBtn.disabled = false; if (regBtnTxt) regBtnTxt.textContent = "Create account"; }
     if (res.ok) {
-      window.alert("Account created. Please log in.");
-      location.hash = "login";
       if (elO) elO.value = "";
-    } else if (res.apksuccess) {
-      window.alert("Account created. Please log in.");
-      location.hash = "login";
+      if (res.autologin) {
+        /* Backend issued tokens -- go straight to home */
+        location.hash = "home";
+      } else {
+        window.alert("Account created. Please log in.");
+        location.hash = "login";
+      }
     } else {
       if (err) {
+        err.style.color = "";
         err.textContent = res.error || "Could not create account";
         err.hidden = false;
       } else {

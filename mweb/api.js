@@ -1,9 +1,9 @@
 /**
- * Kokoroko mweb API — same base URL and routes as app/src/.../MainActivity.kt
+ * Kokoroko mweb API -- same base URL and routes as app/src/.../MainActivity.kt
  * (API_BASE_URL, Bearer auth, JSON bodies). Requires CORS on the backend
  * (Access-Control-Allow-Origin for your mweb host).
  */
-const KokorokoApi = (function () {
+window.KokorokoApi = (function () {
   const API_BASE_URL = "https://fight.pravoo.in";
   const LS_ACCESS = "kokoroko_access";
   const LS_REFRESH = "kokoroko_refresh";
@@ -12,8 +12,10 @@ const KokorokoApi = (function () {
   const LOCAL_DEMO_LOGINS = { svs: "svs" };
 
   const AUTH_LOGIN = "/api/auth/login/";
-  /** Optional; if missing (404), mweb uses APK-style “account created → log in” flow. */
   const AUTH_REGISTER = "/api/auth/register/";
+  const AUTH_OTP_SEND = "/api/auth/otp/send/";
+  const AUTH_OTP_VERIFY_LOGIN = "/api/auth/otp/verify-login/";
+  const AUTH_TOKEN_REFRESH = "/api/auth/token/refresh/";
   const AUTH_WALLET = "/api/auth/wallet/";
   const AUTH_PAYMENT_METHODS = "/api/auth/payment-methods/";
   const AUTH_PROFILE = "/api/auth/profile/";
@@ -231,24 +233,99 @@ const KokorokoApi = (function () {
     return parseWalletFromObject(data, root);
   }
 
+  /** Send OTP to phone for SIGNUP or LOGIN. Returns { ok, error, expiresIn }. */
+  async function sendOtp(phone, purpose) {
+    const p = (phone || "").replace(/\D/g, "").trim();
+    if (p.length < 6) return { ok: false, error: "Please enter a valid phone number." };
+    const pur = (purpose || "SIGNUP").toUpperCase();
+    try {
+      const { ok, status, text } = await apiFetch(AUTH_OTP_SEND, {
+        method: "POST",
+        body: JSON.stringify({ phone_number: p, purpose: pur }),
+        json: true
+      });
+      if (ok) {
+        let expiresIn = 300;
+        try { expiresIn = JSON.parse(text).expires_in || 300; } catch {}
+        return { ok: true, error: null, expiresIn };
+      }
+      if (status === 429) {
+        return { ok: false, error: "Too many requests. Please wait 10 minutes." };
+      }
+      return { ok: false, error: extractErrorText(text) || "Failed to send OTP" };
+    } catch {
+      return { ok: false, error: "Network error. Please try again." };
+    }
+  }
+
+  /** Login via OTP (phone + otp_code). Returns { ok, error }. */
+  async function verifyOtpLogin(phone, otpCode) {
+    const p = (phone || "").replace(/\D/g, "").trim();
+    const o = (otpCode || "").replace(/\D/g, "").trim();
+    if (!p) return { ok: false, error: "Phone number required." };
+    if (!o) return { ok: false, error: "OTP code required." };
+    try {
+      const { ok, status, text } = await apiFetch(AUTH_OTP_VERIFY_LOGIN, {
+        method: "POST",
+        body: JSON.stringify({ phone_number: p, otp_code: o }),
+        json: true
+      });
+      if (!ok) return { ok: false, error: extractErrorText(text) || "OTP login failed (" + status + ")" };
+      let j;
+      try { j = JSON.parse(text); } catch { return { ok: false, error: "Invalid server response" }; }
+      if (j.error) return { ok: false, error: j.error };
+      const access = (j.access || j.token || "").trim();
+      const refresh = (j.refresh || j.refresh_token || "").trim() || null;
+      if (!access) return { ok: false, error: "No token in response" };
+      saveSession(access, refresh);
+      dispatchAuth();
+      return { ok: true, error: null };
+    } catch {
+      return { ok: false, error: "Network error. Please try again." };
+    }
+  }
+
+  /** Refresh the access token using the stored refresh token. Returns true if successful. */
+  async function refreshToken() {
+    const ref = getRefresh();
+    if (!ref) return false;
+    try {
+      const r = await fetch(joinUrl(AUTH_TOKEN_REFRESH), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ refresh: ref }),
+        credentials: "omit"
+      });
+      if (!r.ok) { clearSession(); dispatchAuth(); return false; }
+      const j = await r.json();
+      const access = (j.access || "").trim();
+      if (!access) { clearSession(); dispatchAuth(); return false; }
+      saveSession(access, j.refresh || ref);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Register: POST to AUTH_REGISTER. APK’s SignupScreen does not require server success; if the
-   * endpoint is absent, callers should show “Account created. Please log in.” and return to login.
+   * Register: POST to AUTH_REGISTER with OTP verification.
+   * Backend requires: phone_number, otp_code, username, password.
+   * Returns { ok, error } -- on success the backend also issues tokens (auto-login).
    */
   async function register({ username, phone, password, otp }) {
     const u = (username || "").trim();
     const p = (phone || "").replace(/\D/g, "").trim();
     const pw = (password || "").trim();
     const o = (otp || "").replace(/\D/g, "").trim();
-    if (u.length < 2) return { ok: false, apksuccess: false, error: "Please enter a username." };
-    if (p.length < 6) return { ok: false, apksuccess: false, error: "Please enter a valid phone number." };
-    if (pw.length < 4) return { ok: false, apksuccess: false, error: "Please enter a password." };
+    if (u.length < 2) return { ok: false, error: "Please enter a username." };
+    if (p.length < 6) return { ok: false, error: "Please enter a valid phone number." };
+    if (pw.length < 4) return { ok: false, error: "Please enter a password." };
     const body = {
       username: u,
       phone_number: p,
       password: pw
     };
-    if (o) body.otp = o;
+    if (o) body.otp_code = o;
     try {
       const { ok, status, text } = await apiFetch(AUTH_REGISTER, {
         method: "POST",
@@ -256,17 +333,25 @@ const KokorokoApi = (function () {
         json: true
       });
       if (status === 201 || status === 200) {
-        return { ok: true, apksuccess: false, error: null };
-      }
-      if (status === 404 || status === 405) {
-        return { ok: false, apksuccess: true, error: null };
+        /* Backend returns tokens on registration -- auto-login the user */
+        try {
+          const j = JSON.parse(text);
+          const access = (j.access || j.token || "").trim();
+          const refresh = (j.refresh || "").trim() || null;
+          if (access) {
+            saveSession(access, refresh);
+            dispatchAuth();
+            return { ok: true, autologin: true, error: null };
+          }
+        } catch {}
+        return { ok: true, autologin: false, error: null };
       }
       if (status === 400 || status === 422) {
-        return { ok: false, apksuccess: false, error: extractErrorText(text) || "Could not create account" };
+        return { ok: false, error: extractErrorText(text) || "Could not create account" };
       }
-      return { ok: false, apksuccess: true, error: null };
+      return { ok: false, error: extractErrorText(text) || "Registration failed (" + status + ")" };
     } catch {
-      return { ok: false, apksuccess: true, error: null };
+      return { ok: false, error: "Network error. Please try again." };
     }
   }
 
@@ -321,8 +406,8 @@ const KokorokoApi = (function () {
     if (isLocalDemo()) return { data: emptyWallet(), error: null };
     const { ok, status, text } = await apiFetch(AUTH_WALLET, { method: "GET" });
     if (status === 401) {
-      clearSession();
-      dispatchAuth();
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchWallet();
       return { data: null, error: "Session expired" };
     }
     if (!ok || !text) return { data: null, error: "Could not load wallet (" + status + ")" };
@@ -373,6 +458,8 @@ const KokorokoApi = (function () {
     }
     const { ok, status, text } = await apiFetch(AUTH_PROFILE, { method: "GET" });
     if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchProfile();
       clearSession();
       return { data: null, error: "Session expired" };
     }
@@ -385,7 +472,7 @@ const KokorokoApi = (function () {
   }
 
   async function postProfile(body) {
-    if (!isAuthed() || isLocalDemo()) return { ok: false, error: isLocalDemo() ? "Demo account — not saved" : "Sign in" };
+    if (!isAuthed() || isLocalDemo()) return { ok: false, error: isLocalDemo() ? "Demo account -- not saved" : "Sign in" };
     const gMap = { Male: "MALE", Female: "FEMALE", Other: "OTHER" };
     const json = {
       username: (body.username || "").trim(),
@@ -512,7 +599,7 @@ const KokorokoApi = (function () {
   async function postGundataBet(number, stakeInt) {
     if (!isAuthed()) return { data: null, error: "Sign in to place a bet" };
     if (isLocalDemo()) return { data: null, error: "Demo account cannot place bets" };
-    if (number < 1 || number > 6) return { data: null, error: "Pick 1–6" };
+    if (number < 1 || number > 6) return { data: null, error: "Pick 1-6" };
     const chip = (Math.floor(stakeInt * 100) / 100).toFixed(2);
     const { ok, status, text } = await apiFetch(GAME_GUNDU_BET, {
       method: "POST",
@@ -531,6 +618,8 @@ const KokorokoApi = (function () {
     if (isLocalDemo()) return { data: [], error: null };
     const { ok, text, status } = await apiFetch(GAME_GUNDU_BETS_MINE, { method: "GET" });
     if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchGundataBetsMine();
       clearSession();
       return { data: [], error: "Session expired" };
     }
@@ -562,6 +651,8 @@ const KokorokoApi = (function () {
     if (!isAuthed() || isLocalDemo()) return { data: [], error: isAuthed() ? null : "Sign in" };
     const { ok, text, status } = await apiFetch(GAME_MERON_WALA_BETS_MINE, { method: "GET" });
     if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchMeronWalaBetsMine();
       clearSession();
       return { data: [], error: "Session expired" };
     }
@@ -612,14 +703,14 @@ const KokorokoApi = (function () {
   }
 
   function formatRupeeBalanceForDisplay(raw) {
-    if (raw == null || String(raw).trim() === "") return "₹0.00";
+    if (raw == null || String(raw).trim() === "") return "\u20B90.00";
     const t = String(raw).trim();
-    if (t.startsWith("₹")) {
+    if (t.startsWith("\u20B9")) {
       return t;
     }
     const num = parseFloat(t.replace(/,/g, ""), 10);
-    if (isNaN(num)) return "₹" + t;
-    return "₹" + num.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (isNaN(num)) return "\u20B9" + t;
+    return "\u20B9" + num.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
   return {
@@ -631,6 +722,9 @@ const KokorokoApi = (function () {
     login,
     register,
     logout,
+    sendOtp,
+    verifyOtpLogin,
+    refreshToken,
     fetchWallet,
     fetchPaymentMethodsOnly,
     fetchProfile,
