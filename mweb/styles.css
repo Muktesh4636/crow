@@ -2314,6 +2314,7 @@ a.cockfight-ttl:focus-visible {
 .cockfight-dock {
   flex-shrink: 0;
   background: #0d0d0d;
+  padding-top: 20px;
   padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
 }
 .cock-chips {
@@ -3777,7 +3778,7 @@ a.cockfight-ttl:focus-visible {
 
 /* Cockfight: chips always visible below cards */
 .cock-chips-wrap {
-  padding: 20px 12px 14px;
+  padding: 20px 12px 24px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
