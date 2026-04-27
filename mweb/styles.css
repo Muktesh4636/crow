@@ -3186,10 +3186,7 @@ a.cockfight-ttl:focus-visible {
   background: #000;
 }
 .cockfight-fs-dock {
-  flex-shrink: 0;
-  background: #0d0d0d;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  display: none !important;
 }
 .cockfight-vsbar--fs {
   padding: 6px 16px 2px;
