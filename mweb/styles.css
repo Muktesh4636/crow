@@ -891,6 +891,11 @@ a.brand--home:focus-visible {
   height: 100%;
   object-fit: cover;
 }
+/* Cockfight thumbnail has more letterboxing than Gundu/Cricket — zoom to match apparent logo size */
+.game-tile--cockfight img {
+  transform: scale(1.22);
+  transform-origin: center center;
+}
 
 /* Cock fight + switch */
 .cock-live {
