@@ -3635,6 +3635,19 @@ a.cockfight-ttl:focus-visible {
 }
 .dep-dialog__submit:disabled { opacity: 0.4; cursor: not-allowed; }
 .dep-dialog__submit:not(:disabled):hover { opacity: 0.9; }
+.dep-deeplink-btn {
+  display: block;
+  margin: 10px 0 0;
+  padding: 10px 16px;
+  background: #6a1b9a;
+  color: #fff;
+  text-align: center;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  font-family: inherit;
+}
 
 /* Cockfight: Meron VS Wala bar */
 .cock-vs-bar {

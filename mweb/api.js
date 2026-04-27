@@ -430,22 +430,23 @@ window.KokorokoApi = (function () {
   }
 
   async function fetchPaymentMethodsDetails() {
-    const { ok, status, text } = await apiFetch(AUTH_PAYMENT_METHODS + "?format=details", { method: "GET" });
+    const { ok, status, text } = await apiFetch(AUTH_PAYMENT_METHODS, { method: "GET" });
     if (!ok || !text) return { data: [], error: "Could not load (" + status + ")" };
     try {
       const arr = JSON.parse(text);
       const list = Array.isArray(arr) ? arr : (arr.data || arr.results || arr.payment_methods || []);
       return {
-        data: list.map((m) => ({
+        data: list.filter((m) => m.is_active !== false).map((m) => ({
           id: m.id,
           name: m.name || m.title || m.label || (m.method_type || "Method"),
           type: (m.method_type || m.type || "upi").toUpperCase(),
           upiId: m.upi_id || m.vpa || null,
-          qrImageUrl: m.qr_code || m.qr_url || m.qr_image_url || null,
+          qrImageUrl: m.qr_image ? ("https://fight.pravoo.in" + m.qr_image) : (m.qr_code || m.qr_url || m.qr_image_url || null),
           bankName: m.bank_name || null,
           accountNumber: m.account_number || null,
           accountHolder: m.account_holder || m.account_name || null,
-          ifsc: m.ifsc || m.ifsc_code || null
+          ifsc: m.ifsc || m.ifsc_code || null,
+          deepLink: m.link || m.deep_link || null
         })),
         error: null
       };

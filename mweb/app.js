@@ -619,7 +619,9 @@
       function renderMethod(m) {
         if (!detailsCard) return;
         detailsCard.hidden = false;
-        const isUpi = !m.type || m.type === "UPI" || m.type.includes("UPI");
+        // UPI-like types: UPI, PHONEPE, GPAY, PAYTM, QR, etc.
+        const upiTypes = ["UPI", "PHONEPE", "GPAY", "PAYTM", "QR"];
+        const isUpi = !m.type || upiTypes.some((t) => m.type.toUpperCase().includes(t));
         if (upiBlock) upiBlock.hidden = !isUpi;
         if (bankBlock) bankBlock.hidden = isUpi;
         if (isUpi) {
@@ -627,9 +629,21 @@
           if (copyUpiBtn) {
             copyUpiBtn.onclick = () => {
               copyText(m.upiId || "");
-              copyUpiBtn.title = "Copied!";
-              setTimeout(() => { copyUpiBtn.title = "Copy"; }, 1500);
+              copyUpiBtn.textContent = "Copied!";
+              setTimeout(() => { copyUpiBtn.textContent = "Copy"; }, 1500);
             };
+          }
+          // Deep-link pay button (e.g. PhonePe/GPay)
+          const existingPayBtn = detailsCard.querySelector(".dep-deeplink-btn");
+          if (existingPayBtn) existingPayBtn.remove();
+          if (m.deepLink) {
+            const payBtn = document.createElement("a");
+            payBtn.href = m.deepLink;
+            payBtn.className = "dep-deeplink-btn";
+            payBtn.textContent = "Pay via " + m.name;
+            payBtn.target = "_blank";
+            payBtn.rel = "noopener";
+            if (upiBlock) upiBlock.appendChild(payBtn);
           }
           if (qrWrap && qrImg) {
             if (m.qrImageUrl) {
