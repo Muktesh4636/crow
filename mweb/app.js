@@ -1412,8 +1412,10 @@
         if (!btn || !bar.contains(btn)) return;
         const side = btn.getAttribute("data-cf-side");
         if (side) setCfSide(side);
-        const ctx = barId.includes("fs") ? "fs" : "main";
-        openCfBetSheet(ctx, btn);
+        /* Only open sheet for fullscreen mode; main layout has inline chips */
+        if (barId.includes("fs")) {
+          openCfBetSheet("fs", btn);
+        }
       });
     });
     ["cock-chips", "cockfight-fs-chips"].forEach((id) => {
@@ -1436,17 +1438,12 @@
     function getCfBetContext() {
       const fsDlg = document.getElementById("cockfight-fullscreen");
       const fsSheet = document.getElementById("cf-bet-sheet-fs");
-      const mainSheet = document.getElementById("cf-bet-sheet-main");
       if (fsDlg && !fsDlg.hidden && fsSheet && !fsSheet.hidden) return "fs";
-      if (mainSheet && !mainSheet.hidden) return "main";
-      return null;
+      /* Main layout now always visible — always return main */
+      return "main";
     }
     async function placeCockfightBet() {
       const ctx = getCfBetContext();
-      if (!ctx) {
-        window.alert("Tap Meron, Draw, or Green on the video to open the bet card, then choose amount and place.");
-        return;
-      }
       const bar =
         ctx === "fs"
           ? document.getElementById("cockfight-fs-side-bar")
