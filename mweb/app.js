@@ -920,6 +920,7 @@
       const date = item.created_at || item.date || item.timestamp || "";
       const dateStr = date ? new Date(date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "–";
       const id = item.id || item.transaction_id || "";
+      const note = (item.admin_note || item.note || "").trim();
       const statusClass = status.includes("success") || status.includes("approv") || status.includes("complet")
         ? "txn-card--success" : status.includes("reject") || status.includes("fail")
         ? "txn-card--fail" : "txn-card--pending";
@@ -933,6 +934,7 @@
           <span class="txn-card__date">${dateStr}${id ? " · #" + id : ""}</span>
           <span class="txn-card__status">${statusLabel}</span>
         </div>
+        ${note ? `<p class="txn-card__note">${note}</p>` : ""}
       </div>`;
     }).join("");
   }
