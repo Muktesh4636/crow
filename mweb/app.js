@@ -1294,6 +1294,29 @@
     syncPlace();
     setRegion(0);
   })();
+  (function initHomeBanner() {
+    const wrap = document.getElementById("home-banner");
+    if (!wrap) return;
+    const slides = Array.from(wrap.querySelectorAll(".banner__link"));
+    const dots = Array.from(wrap.querySelectorAll(".banner__dot"));
+    if (slides.length < 2) return;
+    let cur = 0;
+    function goTo(idx) {
+      slides[cur].classList.remove("banner__link--active");
+      slides[cur].setAttribute("aria-hidden", "true");
+      slides[cur].setAttribute("tabindex", "-1");
+      dots[cur].classList.remove("banner__dot--on");
+      cur = (idx + slides.length) % slides.length;
+      slides[cur].classList.add("banner__link--active");
+      slides[cur].removeAttribute("aria-hidden");
+      slides[cur].removeAttribute("tabindex");
+      dots[cur].classList.add("banner__dot--on");
+    }
+    dots.forEach((d, i) => d.addEventListener("click", () => { goTo(i); clearInterval(timer); timer = setInterval(() => goTo(cur + 1), 3500); }));
+    let timer = setInterval(() => goTo(cur + 1), 3500);
+    wrap.addEventListener("mouseenter", () => clearInterval(timer));
+    wrap.addEventListener("mouseleave", () => { timer = setInterval(() => goTo(cur + 1), 3500); });
+  })();
   (function initCockfight() {
     function setCfSide(side) {
       ["cockfight-side-bar", "cockfight-fs-side-bar"].forEach((id) => {

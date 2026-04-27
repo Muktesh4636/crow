@@ -788,8 +788,17 @@ a.brand--home:focus-visible {
   height: 200px;
 }
 .banner__link {
+  position: absolute;
+  inset: 0;
   display: block;
   height: 100%;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  pointer-events: none;
+}
+.banner__link--active {
+  opacity: 1;
+  pointer-events: auto;
 }
 .banner__img {
   display: block;
@@ -805,12 +814,14 @@ a.brand--home:focus-visible {
   display: flex;
   justify-content: center;
   gap: 5px;
+  z-index: 2;
 }
 .banner__dot {
   height: 6px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.4);
   width: 6px;
+  transition: width 0.3s, background 0.3s;
 }
 .banner__dot--on {
   width: 18px;

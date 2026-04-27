@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=7" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
   <div class="app-frame">
@@ -126,7 +126,7 @@
                 <span class="ap-head-ico__t">Promotions</span>
               </div>
               <div class="ap-head-ico">
-                <img src="assets/category_cockfight.jpg" alt="" width="40" height="40" class="ap-head-ico__img" />
+                <img src="assets/cockfight_banner.png" alt="" width="40" height="40" class="ap-head-ico__img" style="object-fit:cover;border-radius:6px;" />
                 <span class="ap-head-ico__t">Cockfight</span>
               </div>
               <div class="ap-head-ico">
@@ -290,12 +290,16 @@
             </div>
           </div>
 
-          <div class="banner">
-            <a class="banner__link" href="#gundu" data-action="gundu">
+          <div class="banner" id="home-banner">
+            <a class="banner__link banner__link--active" href="#gundu" data-action="gundu" data-banner-idx="0">
               <img src="assets/banner_gundu.png" alt="Gundu Ata" width="1000" height="500" class="banner__img" />
             </a>
+            <a class="banner__link" href="#cockfight" data-nav="cockfight" data-banner-idx="1" aria-hidden="true" tabindex="-1">
+              <img src="assets/cockfight_banner.png" alt="The Great Rooster Fight Championship" width="1000" height="500" class="banner__img" loading="lazy" />
+            </a>
             <div class="banner__dots" role="tablist" aria-label="Banners">
-              <span class="banner__dot banner__dot--on"></span>
+              <span class="banner__dot banner__dot--on" role="tab" aria-selected="true" data-banner-dot="0"></span>
+              <span class="banner__dot" role="tab" aria-selected="false" data-banner-dot="1"></span>
             </div>
           </div>
 
@@ -308,7 +312,7 @@
               </button>
             </div>
             <div class="game-row">
-              <a href="#cockfight" class="game-tile" data-nav="cockfight"><img src="assets/category_cockfight.jpg" alt="Cockfight" /></a>
+              <a href="#cockfight" class="game-tile" data-nav="cockfight"><img src="assets/cockfight_banner.png" alt="Cockfight" /></a>
               <a href="#gundu" class="game-tile" data-action="gundu"><img src="assets/category_gunduata.jpg" alt="Gundata" /></a>
               <a href="#cricket" class="game-tile" data-nav=""><img src="assets/category_cricket.jpg" alt="Cricket" /></a>
               <a href="#promo" class="game-tile" data-nav="promotion"><img src="assets/category_promotions.jpg" alt="Promotions" /></a>
@@ -336,7 +340,7 @@
                   muted
                   loop
                   preload="auto"
-                  poster="assets/cock_fight_stream.jpg"
+                  poster="assets/cockfight_banner.png"
                   disablePictureInPicture
                   tabindex="-1"
                 >
@@ -547,7 +551,7 @@
                   loop
                   autoplay
                   preload="auto"
-                  poster="assets/cock_fight_stream.jpg"
+                  poster="assets/cockfight_banner.png"
                   disablePictureInPicture
                   tabindex="-1"
                   data-cockfight-live="1"
@@ -1001,7 +1005,7 @@
       muted
       loop
       preload="metadata"
-      poster="assets/cock_fight_stream.jpg"
+      poster="assets/cockfight_banner.png"
       disablePictureInPicture
     ></video>
     <button type="button" class="live-fsdialog__close" id="live-fs-close" aria-label="Close full screen">×</button>
@@ -1020,7 +1024,7 @@
         muted
         loop
         preload="metadata"
-        poster="assets/cock_fight_stream.jpg"
+        poster="assets/cockfight_banner.png"
         disablePictureInPicture
       ></video>
       <div
@@ -1080,7 +1084,7 @@
       </div>
     </div>
   </div>
-  <script src="api.js?v=7" defer></script>
-  <script src="app.js?v=7" defer></script>
+  <script src="api.js?v=8" defer></script>
+  <script src="app.js?v=8" defer></script>
 </body>
 </html>
