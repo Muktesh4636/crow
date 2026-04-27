@@ -657,6 +657,59 @@ a.brand--home:focus-visible {
 }
 
 /* Home search */
+/* APK download banner */
+.apk-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 16px 4px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  text-decoration: none;
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+}
+.apk-banner__icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #78c97e;
+}
+.apk-banner__text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.apk-banner__text strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.apk-banner__text span {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+}
+.apk-banner__btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: var(--orange-primary, #f57c00);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .search-wrap {
   padding: 10px 16px;
 }
@@ -3542,3 +3595,176 @@ a.cockfight-ttl:focus-visible {
 }
 .dep-dialog__submit:disabled { opacity: 0.4; cursor: not-allowed; }
 .dep-dialog__submit:not(:disabled):hover { opacity: 0.9; }
+
+/* Cockfight: compact side bar + bottom bet sheet (APK-style) */
+.cockfight-side-bar {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 10px 12px 6px;
+  background: #0d0d0d;
+}
+.cockfight-side-bar--fs {
+  padding: 8px 10px 4px;
+}
+.cockfight-side-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: none;
+  border-radius: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  color: #fff;
+  -webkit-tap-highlight-color: transparent;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.cockfight-side-btn--meron {
+  background: #b74a4a;
+}
+.cockfight-side-btn--draw {
+  background: #3f8f5c;
+}
+.cockfight-side-btn--wala {
+  background: #3d73b5;
+}
+.cockfight-side-btn.is-selected {
+  box-shadow: 0 0 0 3px var(--orange-primary, #ff6b00);
+}
+.cockfight-side-btn__lab {
+  font-size: 15px;
+  font-weight: 700;
+}
+.cockfight-side-btn__odd {
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.95;
+}
+.cock-bbar--subrow {
+  margin: 4px 10px 8px;
+  padding: 6px 6px;
+  align-items: center;
+}
+.cock-bbar__hint {
+  flex: 1;
+  margin: 0 8px;
+  font-size: 11px;
+  color: #888;
+  text-align: center;
+  line-height: 1.3;
+}
+/* Bet bottom sheet */
+.cf-bet-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+.cf-bet-sheet:not([hidden]) {
+  pointer-events: auto;
+}
+.cf-bet-sheet[hidden] {
+  display: none !important;
+}
+.cf-bet-sheet__backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+.cf-bet-sheet__panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: var(--app-max, 480px);
+  max-height: 72vh;
+  overflow-y: auto;
+  background: #1a1a1a;
+  border-radius: 16px 16px 0 0;
+  padding: 0 16px 16px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+  animation: cf-sheet-up 0.22s ease-out;
+}
+@keyframes cf-sheet-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0.9;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.cf-bet-sheet__grab {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: #444;
+  margin: 10px auto 6px;
+}
+.cf-bet-sheet__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.cf-bet-sheet__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+}
+.cf-bet-sheet__x {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: none;
+  color: #aaa;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.cf-bet-sheet__sub {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cf-bet-sheet .cock-chips {
+  padding: 6px 0 12px;
+}
+.cf-bet-sheet__place {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: var(--orange-primary, #ff6b00);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+  font-family: inherit;
+}
+.cf-bet-sheet__place:active {
+  opacity: 0.92;
+}
+/* Fullscreen dialog bet sheet stacks above dock */
+.cockfight-fsdialog .cf-bet-sheet--fs {
+  z-index: 210;
+}

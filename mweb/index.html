@@ -266,6 +266,21 @@
 
         <!-- Home -->
         <div class="panel panel--active" data-panel="home">
+          <!-- APK download banner -->
+          <a href="assets/kokoroko.apk" download="Kokoroko.apk" class="apk-banner" aria-label="Download Kokoroko Android app">
+            <span class="apk-banner__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.7 9.05 7.4c1.39.07 2.36.74 3.18.8 1.21-.24 2.37-.93 3.66-.84 1.56.12 2.73.72 3.5 1.82-3.23 1.94-2.65 5.8.36 7.19-.43 1.13-.99 2.25-1.7 3.91zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+            </span>
+            <span class="apk-banner__text">
+              <strong>Download Kokoroko App</strong>
+              <span>Android APK — Free</span>
+            </span>
+            <span class="apk-banner__btn" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              Install
+            </span>
+          </a>
+
           <div class="search-wrap">
             <div class="search" role="search">
               <svg class="search__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5A6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
@@ -548,45 +563,54 @@
               </div>
             </div>
             <div class="cockfight-vsbar" aria-hidden="true">Meron <span>VS</span> Wala</div>
-            <div class="cockfight-row3" id="cockfight-odds" role="group" aria-label="Pick a side">
-              <button type="button" class="cock-portrait cock-portrait--meron is-selected" data-cf-side="Meron" data-cf-odd="1.90" aria-pressed="true">
-                <span class="cock-portrait__odd">1.90<small>X</small></span>
-                <span class="cock-portrait__lab">Meron</span>
-              </button>
-              <button type="button" class="cock-portrait cock-portrait--draw" data-cf-side="Draw" data-cf-odd="4.46" aria-pressed="false">
-                <span class="cock-portrait__odd">4.46<small>X</small></span>
-                <span class="cock-portrait__lab">Draw</span>
-              </button>
-              <button type="button" class="cock-portrait cock-portrait--wala" data-cf-side="Wala" data-cf-odd="1.92" aria-pressed="false">
-                <span class="cock-portrait__odd">1.92<small>X</small></span>
-                <span class="cock-portrait__lab">Wala</span>
-              </button>
-            </div>
           </div>
           <div class="cockfight-dock" id="cockfight-dock">
-            <div class="cock-chips" id="cock-chips" role="group" aria-label="Bet amount">
-              <button type="button" class="cock-chip" data-amt="50">50</button>
-              <button type="button" class="cock-chip is-on" data-amt="100">100</button>
-              <button type="button" class="cock-chip" data-amt="200">200</button>
-              <button type="button" class="cock-chip" data-amt="300">300</button>
-              <button type="button" class="cock-chip" data-amt="500">500</button>
-              <button type="button" class="cock-chip" data-amt="1000">1000</button>
-              <button type="button" class="cock-chip" data-amt="2500">2500</button>
-              <button type="button" class="cock-chip" data-amt="5000">5000</button>
+            <div class="cockfight-side-bar" id="cockfight-side-bar" role="group" aria-label="Pick a side to open bet card">
+              <button type="button" class="cockfight-side-btn cockfight-side-btn--meron is-selected" data-cf-side="Meron" data-cf-odd="1.90" aria-pressed="true">
+                <span class="cockfight-side-btn__lab">Meron</span>
+                <span class="cockfight-side-btn__odd">1.90×</span>
+              </button>
+              <button type="button" class="cockfight-side-btn cockfight-side-btn--draw" data-cf-side="Draw" data-cf-odd="4.46" aria-pressed="false">
+                <span class="cockfight-side-btn__lab">Draw</span>
+                <span class="cockfight-side-btn__odd">4.46×</span>
+              </button>
+              <button type="button" class="cockfight-side-btn cockfight-side-btn--wala" data-cf-side="Wala" data-cf-odd="1.92" aria-pressed="false">
+                <span class="cockfight-side-btn__lab">Wala</span>
+                <span class="cockfight-side-btn__odd">1.92×</span>
+              </button>
             </div>
-            <div class="cock-bbar">
+            <div class="cock-bbar cock-bbar--subrow">
               <div class="cock-bbar__icons">
                 <button type="button" class="cock-bicon" id="cock-open-history" title="Bet history" aria-label="Bet history">
                   <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 1.5 4.2L6.2 19A9 9 0 1 0 13 3zm-1 5v5l4.3 2.5.7-1.2-4-2.3V8z"/></svg>
                 </button>
               </div>
-              <button type="button" class="cock-place" id="cock-place-btn">
-                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>
-                <span>Place Bet…</span>
-              </button>
+              <p class="cock-bbar__hint">Tap Meron, Draw, or Wala to bet</p>
               <a href="#wallet" class="cock-bicon cock-bicon--end" data-nav="wallet" title="Wallet" aria-label="Wallet">
                 <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h2v-2h-2v2zm0-3h2v-2h-2v2zm0-3h2V8h-2v2z"/></svg>
               </a>
+            </div>
+          </div>
+          <div class="cf-bet-sheet" id="cf-bet-sheet-main" hidden>
+            <button type="button" class="cf-bet-sheet__backdrop" id="cf-bet-sheet-main-bd" tabindex="-1" aria-label="Close"></button>
+            <div class="cf-bet-sheet__panel" role="dialog" aria-modal="true" aria-labelledby="cf-bet-sheet-main-title">
+              <div class="cf-bet-sheet__grab" aria-hidden="true"></div>
+              <div class="cf-bet-sheet__head">
+                <h3 class="cf-bet-sheet__title" id="cf-bet-sheet-main-title">Meron · 1.90×</h3>
+                <button type="button" class="cf-bet-sheet__x" id="cf-bet-sheet-main-close" aria-label="Close">×</button>
+              </div>
+              <p class="cf-bet-sheet__sub">Select amount</p>
+              <div class="cock-chips" id="cock-chips" role="group" aria-label="Bet amount">
+                <button type="button" class="cock-chip" data-amt="50">50</button>
+                <button type="button" class="cock-chip is-on" data-amt="100">100</button>
+                <button type="button" class="cock-chip" data-amt="200">200</button>
+                <button type="button" class="cock-chip" data-amt="300">300</button>
+                <button type="button" class="cock-chip" data-amt="500">500</button>
+                <button type="button" class="cock-chip" data-amt="1000">1000</button>
+                <button type="button" class="cock-chip" data-amt="2500">2500</button>
+                <button type="button" class="cock-chip" data-amt="5000">5000</button>
+              </div>
+              <button type="button" class="cf-bet-sheet__place" id="cock-place-btn">Place Bet</button>
             </div>
           </div>
         </div>
@@ -991,21 +1015,41 @@
     </div>
     <div class="cockfight-fs-dock" id="cockfight-fs-dock">
       <div class="cockfight-vsbar cockfight-vsbar--fs" aria-hidden="true">Meron <span>VS</span> Wala</div>
-      <div class="cockfight-row3 cockfight-row3--fs" id="cockfight-fs-odds" role="group" aria-label="Pick a side">
-        <button type="button" class="cock-portrait cock-portrait--meron is-selected" data-cf-side="Meron" data-cf-odd="1.90" aria-pressed="true">
-          <span class="cock-portrait__odd">1.90<small>X</small></span>
-          <span class="cock-portrait__lab">Meron</span>
+      <div class="cockfight-side-bar cockfight-side-bar--fs" id="cockfight-fs-side-bar" role="group" aria-label="Pick a side to open bet card">
+        <button type="button" class="cockfight-side-btn cockfight-side-btn--meron is-selected" data-cf-side="Meron" data-cf-odd="1.90" aria-pressed="true">
+          <span class="cockfight-side-btn__lab">Meron</span>
+          <span class="cockfight-side-btn__odd">1.90×</span>
         </button>
-        <button type="button" class="cock-portrait cock-portrait--draw" data-cf-side="Draw" data-cf-odd="4.46" aria-pressed="false">
-          <span class="cock-portrait__odd">4.46<small>X</small></span>
-          <span class="cock-portrait__lab">Draw</span>
+        <button type="button" class="cockfight-side-btn cockfight-side-btn--draw" data-cf-side="Draw" data-cf-odd="4.46" aria-pressed="false">
+          <span class="cockfight-side-btn__lab">Draw</span>
+          <span class="cockfight-side-btn__odd">4.46×</span>
         </button>
-        <button type="button" class="cock-portrait cock-portrait--wala" data-cf-side="Wala" data-cf-odd="1.92" aria-pressed="false">
-          <span class="cock-portrait__odd">1.92<small>X</small></span>
-          <span class="cock-portrait__lab">Wala</span>
+        <button type="button" class="cockfight-side-btn cockfight-side-btn--wala" data-cf-side="Wala" data-cf-odd="1.92" aria-pressed="false">
+          <span class="cockfight-side-btn__lab">Wala</span>
+          <span class="cockfight-side-btn__odd">1.92×</span>
         </button>
       </div>
-      <div class="cockfight-dock cockfight-dock--fs">
+      <div class="cock-bbar cock-bbar--fs cock-bbar--subrow">
+        <div class="cock-bbar__icons">
+          <button type="button" class="cock-bicon" id="cockfight-fs-open-history" title="Bet history" aria-label="Bet history">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 1.5 4.2L6.2 19A9 9 0 1 0 13 3zm-1 5v5l4.3 2.5.7-1.2-4-2.3V8z"/></svg>
+          </button>
+        </div>
+        <p class="cock-bbar__hint">Tap a side to bet</p>
+        <a href="#wallet" class="cock-bicon cock-bicon--end" data-nav="wallet" title="Wallet" aria-label="Wallet">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h2v-2h-2v2zm0-3h2v-2h-2v2zm0-3h2V8h-2v2z"/></svg>
+        </a>
+      </div>
+    </div>
+    <div class="cf-bet-sheet cf-bet-sheet--fs" id="cf-bet-sheet-fs" hidden>
+      <button type="button" class="cf-bet-sheet__backdrop" id="cf-bet-sheet-fs-bd" tabindex="-1" aria-label="Close"></button>
+      <div class="cf-bet-sheet__panel" role="dialog" aria-modal="true" aria-labelledby="cf-bet-sheet-fs-title">
+        <div class="cf-bet-sheet__grab" aria-hidden="true"></div>
+        <div class="cf-bet-sheet__head">
+          <h3 class="cf-bet-sheet__title" id="cf-bet-sheet-fs-title">Meron · 1.90×</h3>
+          <button type="button" class="cf-bet-sheet__x" id="cf-bet-sheet-fs-close" aria-label="Close">×</button>
+        </div>
+        <p class="cf-bet-sheet__sub">Select amount</p>
         <div class="cock-chips" id="cockfight-fs-chips" role="group" aria-label="Bet amount">
           <button type="button" class="cock-chip" data-amt="50">50</button>
           <button type="button" class="cock-chip is-on" data-amt="100">100</button>
@@ -1016,24 +1060,11 @@
           <button type="button" class="cock-chip" data-amt="2500">2500</button>
           <button type="button" class="cock-chip" data-amt="5000">5000</button>
         </div>
-        <div class="cock-bbar cock-bbar--fs">
-          <div class="cock-bbar__icons">
-            <button type="button" class="cock-bicon" id="cockfight-fs-open-history" title="Bet history" aria-label="Bet history">
-              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 1.5 4.2L6.2 19A9 9 0 1 0 13 3zm-1 5v5l4.3 2.5.7-1.2-4-2.3V8z"/></svg>
-            </button>
-          </div>
-          <button type="button" class="cock-place" id="cockfight-fs-place-btn">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>
-            <span>Place Bet…</span>
-          </button>
-          <a href="#wallet" class="cock-bicon cock-bicon--end" data-nav="wallet" title="Wallet" aria-label="Wallet">
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h2v-2h-2v2zm0-3h2v-2h-2v2zm0-3h2V8h-2v2z"/></svg>
-          </a>
-        </div>
+        <button type="button" class="cf-bet-sheet__place" id="cockfight-fs-place-btn">Place Bet</button>
       </div>
     </div>
   </div>
-  <script src="api.js?v=5" defer></script>
-  <script src="app.js?v=5" defer></script>
+  <script src="api.js?v=6" defer></script>
+  <script src="app.js?v=6" defer></script>
 </body>
 </html>
