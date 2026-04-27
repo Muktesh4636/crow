@@ -634,52 +634,52 @@
         }
       }
 
+      function buildUpiDeepLink(m) {
+        // Build standard UPI intent URL for PhonePe / GPay / Paytm / any UPI app
+        const upi = m.upiId || "";
+        if (!upi) return m.deepLink || null;
+        const t = (m.type || "").toUpperCase();
+        const params = new URLSearchParams({
+          pa: upi,
+          pn: "Kokoroko",
+          am: String(depositAmount),
+          cu: "INR",
+          tn: "Deposit to Kokoroko"
+        });
+        // Use app-specific scheme when possible, fallback to generic upi://
+        if (t.includes("PHONEPE")) return "phonepe://pay?" + params.toString();
+        if (t.includes("GPAY"))    return "tez://upi/pay?" + params.toString();
+        if (t.includes("PAYTM"))   return "paytmmp://upi/pay?" + params.toString();
+        return "upi://pay?" + params.toString();
+      }
+
+      function launchPayment(m) {
+        const link = buildUpiDeepLink(m);
+        if (link) {
+          // Try app deep link; fallback to upi:// which browsers/Android handle
+          window.location.href = link;
+        }
+        // Show upload section immediately so user can upload after paying
+        if (uploadSection) uploadSection.hidden = false;
+      }
+
       function renderMethod(m) {
-        if (!detailsCard) return;
-        detailsCard.hidden = false;
-        // UPI-like types: UPI, PHONEPE, GPAY, PAYTM, QR, etc.
-        const upiTypes = ["UPI", "PHONEPE", "GPAY", "PAYTM", "QR"];
-        const isUpi = !m.type || upiTypes.some((t) => m.type.toUpperCase().includes(t));
-        if (upiBlock) upiBlock.hidden = !isUpi;
-        if (bankBlock) bankBlock.hidden = isUpi;
-        if (upiLabel) upiLabel.textContent = "Pay via " + (m.name || m.type);
-        if (isUpi) {
-          if (upiIdEl) upiIdEl.textContent = m.upiId || "—";
-          if (copyUpiBtn) {
-            copyUpiBtn.onclick = () => {
-              copyText(m.upiId || "");
-              copyUpiBtn.textContent = "Copied!";
-              setTimeout(() => { copyUpiBtn.textContent = "Copy"; }, 1500);
-            };
-          }
-          // Deep-link pay button (e.g. PhonePe/GPay)
-          const existingPayBtn = detailsCard.querySelector(".dep-deeplink-btn");
-          if (existingPayBtn) existingPayBtn.remove();
-          if (m.deepLink) {
-            const payBtn = document.createElement("a");
-            payBtn.href = m.deepLink;
-            payBtn.className = "dep-deeplink-btn";
-            payBtn.textContent = "Pay via " + m.name;
-            payBtn.target = "_blank";
-            payBtn.rel = "noopener";
-            if (upiBlock) upiBlock.appendChild(payBtn);
-          }
-          if (qrWrap && qrImg) {
-            if (m.qrImageUrl) {
-              qrImg.src = m.qrImageUrl;
-              qrWrap.hidden = false;
-            } else {
-              qrWrap.hidden = true;
-            }
-          }
-        } else {
-          if (bankGrid) {
-            const rows = [
-              ["Account Name", m.accountHolder],
-              ["Bank Name", m.bankName],
-              ["Account Number", m.accountNumber],
-              ["IFSC Code", m.ifsc]
-            ].filter(([, v]) => v);
+        // Hide UPI ID card — payment goes direct via deep link
+        if (detailsCard) detailsCard.hidden = true;
+        if (upiBlock) upiBlock.hidden = true;
+        if (bankBlock) bankBlock.hidden = true;
+
+        // Bank accounts (no deep link): show details card
+        const t = (m.type || "").toUpperCase();
+        const isBank = t.includes("BANK");
+        if (isBank && detailsCard && bankGrid) {
+          const rows = [
+            ["Account Name", m.accountHolder],
+            ["Bank Name", m.bankName],
+            ["Account Number", m.accountNumber],
+            ["IFSC Code", m.ifsc]
+          ].filter(([, v]) => v);
+          if (rows.length) {
             bankGrid.innerHTML = rows.map(([label, val]) =>
               `<div class="dep-bank-row">
                 <span class="dep-bank-row__label">${label}</span>
@@ -690,6 +690,8 @@
                 </span>
               </div>`
             ).join("");
+            if (bankBlock) bankBlock.hidden = false;
+            if (detailsCard) detailsCard.hidden = false;
           }
         }
         if (uploadSection) uploadSection.hidden = false;
@@ -703,6 +705,8 @@
           });
         }
         renderMethod(m);
+        // Launch payment app immediately on tap
+        launchPayment(m);
       }
 
       function updateSubmit() {
@@ -747,7 +751,9 @@
                   <svg viewBox="0 0 24 24" width="22" height="22"><path fill="${color}" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
                 </span>
                 <span class="dep-method-btn__name">${m.name || m.type}</span>
-                <span class="dep-method-btn__arrow">👆</span>
+                <span class="dep-method-btn__arrow">
+                  <svg viewBox="0 0 24 24" width="22" height="22"><path fill="${color}" d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+                </span>
               </button>`;
             }).join("");
             methodsRow.querySelectorAll(".dep-method-btn").forEach((b) => {
