@@ -199,13 +199,13 @@
       loadWalletFromApi();
     }
     document.querySelectorAll(".panel").forEach((p) => {
-      const isMatch = p.getAttribute("data-panel") === key;
+      const isMatch = p.getAttribute("data-panel") === panelKey;
       p.hidden = !isMatch;
       p.classList.toggle("panel--active", isMatch);
     });
     document.querySelectorAll(".bottom-nav [data-nav]").forEach((a) => {
       const n = a.getAttribute("data-nav");
-      const on = n === key;
+      const on = n === panelKey;
       a.classList.toggle("bottom-nav__item--on", on);
       if (on) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
