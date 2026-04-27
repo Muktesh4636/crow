@@ -3854,12 +3854,12 @@ a.cockfight-ttl:focus-visible {
 .cockfight-side-btn {
   flex: 1 1 0;
   min-width: 0;
-  min-height: 130px;
+  min-height: 150px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 8px 16px;
+  padding: 20px 8px 18px;
   border: none;
   border-radius: 10px;
   font-family: inherit;
@@ -3887,13 +3887,13 @@ a.cockfight-ttl:focus-visible {
   box-shadow: 0 0 0 3px var(--orange-primary, #ff6b00);
 }
 .cockfight-side-btn__odd {
-  font-size: 19px;
+  font-size: 21px;
   font-weight: 800;
   color: #fff;
   letter-spacing: 0.02em;
 }
 .cockfight-side-btn__lab {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: #fff;
 }
