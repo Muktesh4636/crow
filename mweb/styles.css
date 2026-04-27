@@ -698,7 +698,11 @@ a.brand--home:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #78c97e;
+  color: #34a853;
+}
+.apk-banner__icon--play svg {
+  display: block;
+  margin: 1px 0 0 1px;
 }
 .apk-banner__text {
   flex: 1;
