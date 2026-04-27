@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=29" />
+  <link rel="stylesheet" href="styles.css?v=30" />
 </head>
 <body>
   <div class="app-frame">
@@ -858,6 +858,11 @@
               <span class="profile-menu__label">Referral &amp; Earn</span>
               <svg class="profile-menu__chev" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
             </button>
+            <button type="button" class="profile-menu__row" data-open-profile="transactions">
+              <span class="profile-menu__ic"><svg viewBox="0 0 24 24" width="32" height="32" aria-hidden="true"><path fill="currentColor" d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg></span>
+              <span class="profile-menu__label">Transaction Records</span>
+              <svg class="profile-menu__chev" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </button>
             <hr class="profile-divider" />
             <p class="profile-section__h">Contact / Support:</p>
             <a class="profile-menu__row profile-menu__row--link" id="profile-link-wa" href="https://wa.me/9182351381" target="_blank" rel="noopener noreferrer">
@@ -962,6 +967,27 @@
                 <div class="referral-faq__badge"><span class="referral-faq__icon">📣</span><span class="referral-faq__pill">REFER A FRIEND</span></div>
                 <p class="referral-faq__q">How referral works and how to earn?</p>
               </div>
+            </div>
+          </div>
+
+          <!-- Transaction Records -->
+          <div class="profile-subview" data-profile-sub="transactions" hidden>
+            <div class="profile-topbar">
+              <button type="button" class="profile-topbar__iconbtn" data-profile-back="main" aria-label="Back">
+                <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+              </button>
+              <h2 class="profile-topbar__title profile-topbar__title--medium">Transaction Records</h2>
+              <a href="#home" class="profile-topbar__home" aria-label="Home">
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+              </a>
+            </div>
+            <div class="txn-tabs" role="tablist">
+              <button type="button" class="txn-tab txn-tab--active" id="txn-tab-dep" role="tab" aria-selected="true" data-txn-tab="deposits">Deposits</button>
+              <button type="button" class="txn-tab" id="txn-tab-wd" role="tab" aria-selected="false" data-txn-tab="withdrawals">Withdrawals</button>
+            </div>
+            <div class="txn-body">
+              <div id="txn-list-deposits" class="txn-list" role="tabpanel"></div>
+              <div id="txn-list-withdrawals" class="txn-list" role="tabpanel" hidden></div>
             </div>
           </div>
         </div>
