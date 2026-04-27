@@ -3691,10 +3691,10 @@ a.cockfight-ttl:focus-visible {
 .cock-bbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px max(8px, env(safe-area-inset-bottom, 0px));
-  background: var(--surface, #1a1a1a);
-  border-top: 1px solid rgba(255,255,255,0.08);
+  gap: 0;
+  padding: 8px 6px max(8px, env(safe-area-inset-bottom, 0px));
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
 }
 .cock-place {
   flex: 1;
@@ -3702,16 +3702,17 @@ a.cockfight-ttl:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 44px;
+  height: 48px;
   border: none;
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--orange-primary, #f57c00);
   color: #fff;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   font-family: inherit;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  margin: 0 4px;
 }
 .cock-place:active { opacity: 0.85; }
 
@@ -3738,13 +3739,12 @@ a.cockfight-ttl:focus-visible {
 .cockfight-side-btn {
   flex: 1 1 0;
   min-width: 0;
-  min-height: 72px;
+  min-height: 120px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 10px 6px;
+  justify-content: space-between;
+  padding: 16px 6px 14px;
   border: none;
   border-radius: 12px;
   font-family: inherit;
@@ -3755,30 +3755,32 @@ a.cockfight-ttl:focus-visible {
   box-sizing: border-box;
 }
 .cockfight-side-btn--meron {
-  background: #b74a4a;
+  background: linear-gradient(160deg, #c0392b 0%, #922b21 100%);
 }
-/* Draw = tie — distinct from Green (Wala) */
+/* Draw = tie — green */
 .cockfight-side-btn--draw {
-  background: linear-gradient(160deg, #c9a227 0%, #8d6910 100%);
+  background: linear-gradient(160deg, #27ae60 0%, #1e8449 100%);
 }
-/* Green card = Wala side in API */
+/* Green card = Wala side in API — blue */
 .cockfight-side-btn--green {
-  background: linear-gradient(160deg, #43a047 0%, #1b5e20 100%);
+  background: linear-gradient(160deg, #2980b9 0%, #1a5276 100%);
 }
 .cockfight-side-btn--wala {
-  background: linear-gradient(160deg, #43a047 0%, #1b5e20 100%);
+  background: linear-gradient(160deg, #2980b9 0%, #1a5276 100%);
 }
 .cockfight-side-btn.is-selected {
   box-shadow: 0 0 0 3px var(--orange-primary, #ff6b00);
 }
-.cockfight-side-btn__lab {
-  font-size: 15px;
-  font-weight: 700;
-}
 .cockfight-side-btn__odd {
-  font-size: 13px;
-  font-weight: 600;
-  opacity: 0.95;
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+.cockfight-side-btn__lab {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
 }
 .cock-bbar--subrow {
   margin: 4px 10px 8px;
