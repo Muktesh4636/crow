@@ -790,6 +790,11 @@ a.brand--home:focus-visible {
   overflow: hidden;
   background: #bdbdbd;
   height: 200px;
+  cursor: grab;
+  user-select: none;
+}
+.banner:active {
+  cursor: grabbing;
 }
 .banner__link {
   position: absolute;

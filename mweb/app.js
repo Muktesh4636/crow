@@ -1442,6 +1442,24 @@
     let timer = setInterval(() => goTo(cur + 1), 3500);
     wrap.addEventListener("mouseenter", () => clearInterval(timer));
     wrap.addEventListener("mouseleave", () => { timer = setInterval(() => goTo(cur + 1), 3500); });
+
+    /* Touch / mouse swipe support */
+    let startX = 0, startY = 0, dragging = false;
+    function onDragStart(x, y) { startX = x; startY = y; dragging = true; }
+    function onDragEnd(x, y) {
+      if (!dragging) return;
+      dragging = false;
+      const dx = x - startX;
+      const dy = y - startY;
+      if (Math.abs(dx) < 30 || Math.abs(dx) < Math.abs(dy)) return; /* too short or mostly vertical */
+      clearInterval(timer);
+      goTo(dx < 0 ? cur + 1 : cur - 1);
+      timer = setInterval(() => goTo(cur + 1), 3500);
+    }
+    wrap.addEventListener("touchstart", (e) => { const t = e.touches[0]; onDragStart(t.clientX, t.clientY); }, { passive: true });
+    wrap.addEventListener("touchend",   (e) => { const t = e.changedTouches[0]; onDragEnd(t.clientX, t.clientY); }, { passive: true });
+    wrap.addEventListener("mousedown",  (e) => onDragStart(e.clientX, e.clientY));
+    wrap.addEventListener("mouseup",    (e) => onDragEnd(e.clientX, e.clientY));
   })();
   (function initCockfight() {
     function setCfSide(side) {
