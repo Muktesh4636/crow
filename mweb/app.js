@@ -4,7 +4,7 @@
     console.error("KokorokoApi missing — include api.js before app.js");
   }
   const TAB_IDS = ["home", "promotion", "wallet", "profile"];
-  const ALL_SCREENS = [...TAB_IDS, "cockfight", "gundu", "login", "register"];
+  const ALL_SCREENS = [...TAB_IDS, "cockfight", "gundu", "login", "register", "transactions"];
   const NAV_HASHES = ALL_SCREENS;
   let lastWalletData = null;
   let cockfightLiveBound = false;
@@ -178,17 +178,24 @@
       location.replace("#" + key);
       return;
     }
-    document.documentElement.dataset.tab = key;
-    if (key !== "home") {
+    /* transactions is a subview of profile */
+    const panelKey = key === "transactions" ? "profile" : key;
+    document.documentElement.dataset.tab = panelKey;
+    if (panelKey !== "home") {
       closeLiveVideoFullscreen();
     }
-    if (key !== "cockfight") {
+    if (panelKey !== "cockfight") {
       closeCockfightFullscreen();
     }
-    if (key === "profile") {
-      showProfileView("main");
+    if (panelKey === "profile") {
+      if (key === "transactions") {
+        showProfileView("transactions");
+        loadTransactions("deposits");
+      } else {
+        showProfileView("main");
+      }
     }
-    if (key === "wallet" && K) {
+    if (panelKey === "wallet" && K) {
       loadWalletFromApi();
     }
     document.querySelectorAll(".panel").forEach((p) => {
@@ -1006,9 +1013,12 @@
         e.preventDefault();
         const name = open.getAttribute("data-open-profile");
         if (name) {
-          showProfileView(name);
-          if (name === "details") loadProfileForm();
-          if (name === "transactions") loadTransactions("deposits");
+          if (name === "transactions") {
+            location.hash = "transactions";
+          } else {
+            showProfileView(name);
+            if (name === "details") loadProfileForm();
+          }
         }
         return;
       }
