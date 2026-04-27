@@ -591,6 +591,7 @@
       const submitBtn = document.getElementById("dep-submit-btn");
       const submitTxt = document.getElementById("dep-submit-txt");
       const depFileIn = document.getElementById("dep-screenshot-input");
+      const upiLabel = document.getElementById("dep-upi-label");
 
       let methods = [];
       let selectedMethod = null;
@@ -624,6 +625,7 @@
         const isUpi = !m.type || upiTypes.some((t) => m.type.toUpperCase().includes(t));
         if (upiBlock) upiBlock.hidden = !isUpi;
         if (bankBlock) bankBlock.hidden = isUpi;
+        if (upiLabel) upiLabel.textContent = "Pay via " + (m.name || m.type);
         if (isUpi) {
           if (upiIdEl) upiIdEl.textContent = m.upiId || "—";
           if (copyUpiBtn) {
