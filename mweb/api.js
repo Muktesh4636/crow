@@ -296,14 +296,15 @@ window.KokorokoApi = (function () {
         body: JSON.stringify({ refresh: ref }),
         credentials: "omit"
       });
-      if (!r.ok) { clearSession(); dispatchAuth(); return false; }
+      if (r.status === 401 || r.status === 403) { clearSession(); dispatchAuth(); return false; }
+      if (!r.ok) return false; /* network/server error — do NOT clear session, just fail silently */
       const j = await r.json();
       const access = (j.access || "").trim();
-      if (!access) { clearSession(); dispatchAuth(); return false; }
+      if (!access) return false;
       saveSession(access, j.refresh || ref);
       return true;
     } catch {
-      return false;
+      return false; /* network offline — do NOT clear session */
     }
   }
 
@@ -486,7 +487,7 @@ window.KokorokoApi = (function () {
     if (status === 401) {
       const refreshed = await refreshToken();
       if (refreshed) return fetchProfile();
-      clearSession();
+      clearSession(); dispatchAuth();
       return { data: null, error: "Session expired" };
     }
     if (!ok) return { data: null, error: "Could not load profile" };
@@ -646,7 +647,7 @@ window.KokorokoApi = (function () {
     if (status === 401) {
       const refreshed = await refreshToken();
       if (refreshed) return fetchGundataBetsMine();
-      clearSession();
+      clearSession(); dispatchAuth();
       return { data: [], error: "Session expired" };
     }
     if (!ok) return { data: [], error: "Failed" };
@@ -679,7 +680,7 @@ window.KokorokoApi = (function () {
     if (status === 401) {
       const refreshed = await refreshToken();
       if (refreshed) return fetchMeronWalaBetsMine();
-      clearSession();
+      clearSession(); dispatchAuth();
       return { data: [], error: "Session expired" };
     }
     if (!ok) return { data: [], error: "Failed" };
@@ -772,4 +773,11 @@ window.KokorokoApi = (function () {
     API_BASE_URL,
     GUNDUATA_VIRTUAL
   };
+
+  /* Proactive token refresh — silently refresh every 50 min so the 60-min access token never expires mid-session */
+  setInterval(async () => {
+    if (isAuthed() && !isLocalDemo() && getRefresh()) {
+      await refreshToken();
+    }
+  }, 50 * 60 * 1000);
 })();
