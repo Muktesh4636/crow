@@ -1452,7 +1452,7 @@
         ctx === "fs" ? document.getElementById("cockfight-fs-chips") : document.getElementById("cock-chips");
       const sideEl = bar && bar.querySelector(".cockfight-side-btn.is-selected");
       if (!sideEl) {
-        window.alert("Pick Meron, Draw, or Green");
+        window.alert("Pick Meron, Draw, or Wala");
         return;
       }
       if (!K || !K.isAuthed()) {
