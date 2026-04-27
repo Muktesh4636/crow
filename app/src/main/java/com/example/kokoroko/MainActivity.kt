@@ -6118,7 +6118,7 @@ fun LoginScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             HeaderIconItem("Promotions", imageRes = R.mipmap.ic_launcher)
-            HeaderIconItem("Cockfight", imageRes = R.drawable.cockfight_banner)
+            HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight)
             HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata)
             HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket)
         }
@@ -9512,7 +9512,7 @@ fun PopularGamesSection(
         }
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            GameIconItem("Cockfight", R.drawable.cockfight_banner, onClick = onCockfightClick)
+            GameIconItem("Cockfight", R.drawable.category_cockfight, onClick = onCockfightClick)
             GameIconItem("Gundata", R.drawable.category_gunduata, onClick = onGundataClick)
             GameIconItem("Cricket", R.drawable.category_cricket, onClick = onCricketClick)
             GameIconItem("Promotions", R.drawable.category_promotions, onClick = onPromotionsClick)
