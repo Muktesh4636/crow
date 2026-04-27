@@ -931,7 +931,7 @@
           <span class="txn-card__amount">₹${amount}</span>
         </div>
         <div class="txn-card__row txn-card__row--sub">
-          <span class="txn-card__date">${dateStr}${id ? " · #" + id : ""}</span>
+          <span class="txn-card__date">${dateStr}</span>
           <span class="txn-card__status">${statusLabel}</span>
         </div>
         ${note ? `<p class="txn-card__note">${note}</p>` : ""}
