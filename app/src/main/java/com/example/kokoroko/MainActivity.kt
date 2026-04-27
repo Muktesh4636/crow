@@ -6118,7 +6118,7 @@ fun LoginScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             HeaderIconItem("Promotions", imageRes = R.mipmap.ic_launcher)
-            HeaderIconItem("Cockfight", imageRes = R.drawable.category_cockfight)
+            HeaderIconItem("Cockfight", imageRes = R.drawable.cockfight_banner)
             HeaderIconItem("Dice Play", imageRes = R.drawable.category_gunduata)
             HeaderIconItem("Cricket", imageRes = R.drawable.category_cricket)
         }
@@ -9214,7 +9214,7 @@ fun HomeScreen(
             }
         }
         item(key = "banner", contentType = "banner") {
-            BannerCarousel(homeListState = listState, onGundataClick = onOpenGundata)
+            BannerCarousel(homeListState = listState, onGundataClick = onOpenGundata, onCockfightClick = onOpenCockfight)
         }
         item(key = "popular_games", contentType = "games") {
             PopularGamesSection(
@@ -9424,9 +9424,10 @@ fun HeaderIconItem(label: String, icon: ImageVector? = null, imageRes: Int? = nu
 @Composable
 fun BannerCarousel(
     homeListState: LazyListState,
-    onGundataClick: () -> Unit = {}
+    onGundataClick: () -> Unit = {},
+    onCockfightClick: () -> Unit = {}
 ) {
-    val totalBanners = 1
+    val totalBanners = 2
     val rowState = rememberLazyListState()
     val snapFling = rememberSnapFlingBehavior(lazyListState = rowState)
     LaunchedEffect(totalBanners) {
@@ -9454,7 +9455,23 @@ fun BannerCarousel(
             flingBehavior = snapFling,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Slide 0: Gundu Ata banner — opens Gundu Ata game
+            // Slide 0: Cockfight banner — opens Cockfight screen
+            item(key = "cockfight") {
+                Box(
+                    modifier = Modifier
+                        .fillParentMaxWidth()
+                        .fillMaxHeight()
+                        .clickable { onCockfightClick() }
+                ) {
+                    DrawableImage(
+                        R.drawable.cockfight_banner,
+                        contentDescription = "Cockfight Championship",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+            // Slide 1: Gundu Ata banner — opens Gundu Ata game
             item(key = "gundu") {
                 Box(
                     modifier = Modifier
@@ -9495,7 +9512,7 @@ fun PopularGamesSection(
         }
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            GameIconItem("Cockfight", R.drawable.category_cockfight, onClick = onCockfightClick)
+            GameIconItem("Cockfight", R.drawable.cockfight_banner, onClick = onCockfightClick)
             GameIconItem("Gundata", R.drawable.category_gunduata, onClick = onGundataClick)
             GameIconItem("Cricket", R.drawable.category_cricket, onClick = onCricketClick)
             GameIconItem("Promotions", R.drawable.category_promotions, onClick = onPromotionsClick)
