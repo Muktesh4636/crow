@@ -3735,6 +3735,18 @@ a.cockfight-ttl:focus-visible {
   padding-left: max(10px, env(safe-area-inset-left, 0px));
   padding-right: max(10px, env(safe-area-inset-right, 0px));
   padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  /* shorter cards in fullscreen */
+  align-items: flex-end;
+}
+.cockfight-bet-cards--fs .cockfight-side-btn {
+  min-height: 72px;
+  padding: 10px 8px 10px;
+}
+.cockfight-bet-cards--fs .cockfight-side-btn__lab {
+  font-size: 14px;
+}
+.cockfight-bet-cards--fs .cockfight-side-btn__odd {
+  font-size: 18px;
 }
 .cockfight-side-btn {
   flex: 1 1 0;
