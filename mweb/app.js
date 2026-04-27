@@ -1644,11 +1644,15 @@
   window.addEventListener("hashchange", onHash);
   onHash();
 
-  /* APK download banner — show after 3 s on first visit, remember dismissal */
+  /* APK download banner — Android only, show after 3 s on first visit */
   (function setupApkBanner() {
     const banner = document.getElementById("apk-banner");
     const closeBtn = document.getElementById("apk-banner-close");
     if (!banner) return;
+    /* Hide entirely on Apple devices — APK doesn't work on iOS/iPadOS */
+    const ua = navigator.userAgent || "";
+    const isApple = /iPhone|iPad|iPod|Macintosh/i.test(ua);
+    if (isApple) { banner.hidden = true; return; }
     if (sessionStorage.getItem("apk-banner-dismissed")) return;
     setTimeout(() => {
       banner.classList.add("apk-banner--visible");
