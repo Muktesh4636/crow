@@ -3083,9 +3083,10 @@ a.cockfight-ttl:focus-visible {
 /* Cockfight: maximize on stream + fullscreen layer (same as .live-fsdialog) */
 .cockfight-stream__max {
   position: absolute;
-  bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  top: max(8px, env(safe-area-inset-top, 0px));
+  bottom: auto;
   right: 8px;
-  z-index: 4;
+  z-index: 6;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3135,6 +3136,8 @@ a.cockfight-ttl:focus-visible {
   z-index: 2;
 }
 .cockfight-fsdialog__video {
+  position: relative;
+  z-index: 0;
   width: 100%;
   height: 100%;
   max-height: 100%;
@@ -3189,7 +3192,7 @@ a.cockfight-ttl:focus-visible {
   font-size: 32px;
   line-height: 1;
   cursor: pointer;
-  z-index: 3;
+  z-index: 20;
   padding: 0;
 }
 .gundu-virt {
@@ -3596,26 +3599,51 @@ a.cockfight-ttl:focus-visible {
 .dep-dialog__submit:disabled { opacity: 0.4; cursor: not-allowed; }
 .dep-dialog__submit:not(:disabled):hover { opacity: 0.9; }
 
-/* Cockfight: compact side bar + bottom bet sheet (APK-style) */
+/* Cockfight: three equal cards overlaid on video + bottom bet sheet */
+.cockfight-bet-cards.cockfight-side-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 10px max(10px, env(safe-area-inset-bottom, 0px));
+  margin: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.55) 35%,
+    rgba(0, 0, 0, 0.82) 100%
+  );
+  pointer-events: none;
+}
+.cockfight-bet-cards.cockfight-side-bar .cockfight-side-btn {
+  pointer-events: auto;
+}
+.cockfight-bet-cards--fs.cockfight-side-bar {
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+  padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+}
+/* Legacy dock strip (unused when cards are on video) — keep minimal for any orphan */
 .cockfight-side-bar {
   display: flex;
   flex-direction: row;
   gap: 8px;
-  padding: 10px 12px 6px;
-  background: #0d0d0d;
-}
-.cockfight-side-bar--fs {
-  padding: 8px 10px 4px;
 }
 .cockfight-side-btn {
   flex: 1 1 0;
   min-width: 0;
+  min-height: 72px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 12px 8px;
+  padding: 10px 6px;
   border: none;
   border-radius: 12px;
   font-family: inherit;
@@ -3623,15 +3651,21 @@ a.cockfight-ttl:focus-visible {
   color: #fff;
   -webkit-tap-highlight-color: transparent;
   transition: box-shadow 0.15s, transform 0.1s;
+  box-sizing: border-box;
 }
 .cockfight-side-btn--meron {
   background: #b74a4a;
 }
+/* Draw = tie — distinct from Green (Wala) */
 .cockfight-side-btn--draw {
-  background: #3f8f5c;
+  background: linear-gradient(160deg, #c9a227 0%, #8d6910 100%);
+}
+/* Green card = Wala side in API */
+.cockfight-side-btn--green {
+  background: linear-gradient(160deg, #43a047 0%, #1b5e20 100%);
 }
 .cockfight-side-btn--wala {
-  background: #3d73b5;
+  background: linear-gradient(160deg, #43a047 0%, #1b5e20 100%);
 }
 .cockfight-side-btn.is-selected {
   box-shadow: 0 0 0 3px var(--orange-primary, #ff6b00);

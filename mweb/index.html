@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=7" />
 </head>
 <body>
   <div class="app-frame">
@@ -560,32 +560,43 @@
                 <button type="button" class="cockfight-stream__max" id="cockfight-video-max" aria-label="Maximize video" title="Full screen">
                   <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
                 </button>
+                <div
+                  class="cockfight-bet-cards cockfight-side-bar"
+                  id="cockfight-side-bar"
+                  role="group"
+                  aria-label="Pick Meron, Draw, or Green to open bet card"
+                >
+                  <button type="button" class="cockfight-side-btn cockfight-side-btn--meron is-selected" data-cf-side="Meron" data-cf-display="Meron" data-cf-odd="1.90" aria-pressed="true">
+                    <span class="cockfight-side-btn__lab">Meron</span>
+                    <span class="cockfight-side-btn__odd">1.90×</span>
+                  </button>
+                  <button type="button" class="cockfight-side-btn cockfight-side-btn--draw" data-cf-side="Draw" data-cf-display="Draw" data-cf-odd="4.46" aria-pressed="false">
+                    <span class="cockfight-side-btn__lab">Draw</span>
+                    <span class="cockfight-side-btn__odd">4.46×</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="cockfight-side-btn cockfight-side-btn--green"
+                    data-cf-side="Wala"
+                    data-cf-display="Green"
+                    data-cf-odd="1.92"
+                    aria-pressed="false"
+                  >
+                    <span class="cockfight-side-btn__lab">Green</span>
+                    <span class="cockfight-side-btn__odd">1.92×</span>
+                  </button>
+                </div>
               </div>
             </div>
-            <div class="cockfight-vsbar" aria-hidden="true">Meron <span>VS</span> Wala</div>
           </div>
           <div class="cockfight-dock" id="cockfight-dock">
-            <div class="cockfight-side-bar" id="cockfight-side-bar" role="group" aria-label="Pick a side to open bet card">
-              <button type="button" class="cockfight-side-btn cockfight-side-btn--meron is-selected" data-cf-side="Meron" data-cf-odd="1.90" aria-pressed="true">
-                <span class="cockfight-side-btn__lab">Meron</span>
-                <span class="cockfight-side-btn__odd">1.90×</span>
-              </button>
-              <button type="button" class="cockfight-side-btn cockfight-side-btn--draw" data-cf-side="Draw" data-cf-odd="4.46" aria-pressed="false">
-                <span class="cockfight-side-btn__lab">Draw</span>
-                <span class="cockfight-side-btn__odd">4.46×</span>
-              </button>
-              <button type="button" class="cockfight-side-btn cockfight-side-btn--wala" data-cf-side="Wala" data-cf-odd="1.92" aria-pressed="false">
-                <span class="cockfight-side-btn__lab">Wala</span>
-                <span class="cockfight-side-btn__odd">1.92×</span>
-              </button>
-            </div>
             <div class="cock-bbar cock-bbar--subrow">
               <div class="cock-bbar__icons">
                 <button type="button" class="cock-bicon" id="cock-open-history" title="Bet history" aria-label="Bet history">
                   <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 1.5 4.2L6.2 19A9 9 0 1 0 13 3zm-1 5v5l4.3 2.5.7-1.2-4-2.3V8z"/></svg>
                 </button>
               </div>
-              <p class="cock-bbar__hint">Tap Meron, Draw, or Wala to bet</p>
+              <p class="cock-bbar__hint">Tap Meron, Draw, or Green on the video to bet</p>
               <a href="#wallet" class="cock-bicon cock-bicon--end" data-nav="wallet" title="Wallet" aria-label="Wallet">
                 <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h2v-2h-2v2zm0-3h2v-2h-2v2zm0-3h2V8h-2v2z"/></svg>
               </a>
@@ -1011,31 +1022,35 @@
         poster="assets/cock_fight_stream.jpg"
         disablePictureInPicture
       ></video>
-      <button type="button" class="cockfight-fsdialog__close" id="cockfight-fs-close" aria-label="Close full screen">×</button>
-    </div>
-    <div class="cockfight-fs-dock" id="cockfight-fs-dock">
-      <div class="cockfight-vsbar cockfight-vsbar--fs" aria-hidden="true">Meron <span>VS</span> Wala</div>
-      <div class="cockfight-side-bar cockfight-side-bar--fs" id="cockfight-fs-side-bar" role="group" aria-label="Pick a side to open bet card">
-        <button type="button" class="cockfight-side-btn cockfight-side-btn--meron is-selected" data-cf-side="Meron" data-cf-odd="1.90" aria-pressed="true">
+      <div
+        class="cockfight-bet-cards cockfight-bet-cards--fs cockfight-side-bar cockfight-side-bar--fs"
+        id="cockfight-fs-side-bar"
+        role="group"
+        aria-label="Pick Meron, Draw, or Green to open bet card"
+      >
+        <button type="button" class="cockfight-side-btn cockfight-side-btn--meron is-selected" data-cf-side="Meron" data-cf-display="Meron" data-cf-odd="1.90" aria-pressed="true">
           <span class="cockfight-side-btn__lab">Meron</span>
           <span class="cockfight-side-btn__odd">1.90×</span>
         </button>
-        <button type="button" class="cockfight-side-btn cockfight-side-btn--draw" data-cf-side="Draw" data-cf-odd="4.46" aria-pressed="false">
+        <button type="button" class="cockfight-side-btn cockfight-side-btn--draw" data-cf-side="Draw" data-cf-display="Draw" data-cf-odd="4.46" aria-pressed="false">
           <span class="cockfight-side-btn__lab">Draw</span>
           <span class="cockfight-side-btn__odd">4.46×</span>
         </button>
-        <button type="button" class="cockfight-side-btn cockfight-side-btn--wala" data-cf-side="Wala" data-cf-odd="1.92" aria-pressed="false">
-          <span class="cockfight-side-btn__lab">Wala</span>
+        <button type="button" class="cockfight-side-btn cockfight-side-btn--green" data-cf-side="Wala" data-cf-display="Green" data-cf-odd="1.92" aria-pressed="false">
+          <span class="cockfight-side-btn__lab">Green</span>
           <span class="cockfight-side-btn__odd">1.92×</span>
         </button>
       </div>
+      <button type="button" class="cockfight-fsdialog__close" id="cockfight-fs-close" aria-label="Close full screen">×</button>
+    </div>
+    <div class="cockfight-fs-dock" id="cockfight-fs-dock">
       <div class="cock-bbar cock-bbar--fs cock-bbar--subrow">
         <div class="cock-bbar__icons">
           <button type="button" class="cock-bicon" id="cockfight-fs-open-history" title="Bet history" aria-label="Bet history">
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 1.5 4.2L6.2 19A9 9 0 1 0 13 3zm-1 5v5l4.3 2.5.7-1.2-4-2.3V8z"/></svg>
           </button>
         </div>
-        <p class="cock-bbar__hint">Tap a side to bet</p>
+        <p class="cock-bbar__hint">Tap Meron, Draw, or Green on the video</p>
         <a href="#wallet" class="cock-bicon cock-bicon--end" data-nav="wallet" title="Wallet" aria-label="Wallet">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h2v-2h-2v2zm0-3h2v-2h-2v2zm0-3h2V8h-2v2z"/></svg>
         </a>
@@ -1064,7 +1079,7 @@
       </div>
     </div>
   </div>
-  <script src="api.js?v=6" defer></script>
-  <script src="app.js?v=6" defer></script>
+  <script src="api.js?v=7" defer></script>
+  <script src="app.js?v=7" defer></script>
 </body>
 </html>
