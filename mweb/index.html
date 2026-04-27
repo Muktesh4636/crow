@@ -267,7 +267,7 @@
         <!-- Home -->
         <div class="panel panel--active" data-panel="home">
           <!-- APK download banner -->
-          <a href="assets/kokoroko.apk" download="Kokoroko.apk" class="apk-banner" aria-label="Download Kokoroko Android app">
+          <a href="assets/kokoroko.apk" download="Kokoroko.apk" class="apk-banner" id="apk-banner" aria-label="Download Kokoroko Android app">
             <span class="apk-banner__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.7 9.05 7.4c1.39.07 2.36.74 3.18.8 1.21-.24 2.37-.93 3.66-.84 1.56.12 2.73.72 3.5 1.82-3.23 1.94-2.65 5.8.36 7.19-.43 1.13-.99 2.25-1.7 3.91zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
             </span>
@@ -279,6 +279,7 @@
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
               Install
             </span>
+            <button type="button" class="apk-banner__close" id="apk-banner-close" aria-label="Dismiss">×</button>
           </a>
 
           <div class="search-wrap">

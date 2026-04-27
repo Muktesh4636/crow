@@ -1643,4 +1643,23 @@
 
   window.addEventListener("hashchange", onHash);
   onHash();
+
+  /* APK download banner — show after 3 s on first visit, remember dismissal */
+  (function setupApkBanner() {
+    const banner = document.getElementById("apk-banner");
+    const closeBtn = document.getElementById("apk-banner-close");
+    if (!banner) return;
+    if (sessionStorage.getItem("apk-banner-dismissed")) return;
+    setTimeout(() => {
+      banner.classList.add("apk-banner--visible");
+    }, 3000);
+    if (closeBtn) {
+      closeBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        banner.hidden = true;
+        sessionStorage.setItem("apk-banner-dismissed", "1");
+      });
+    }
+  })();
 })();

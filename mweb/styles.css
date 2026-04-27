@@ -658,6 +658,10 @@ a.brand--home:focus-visible {
 
 /* Home search */
 /* APK download banner */
+@keyframes apk-banner-in {
+  from { opacity: 0; transform: translateY(-14px); max-height: 0; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+  to   { opacity: 1; transform: translateY(0);     max-height: 120px; margin-top: 10px; margin-bottom: 4px; padding-top: 12px; padding-bottom: 12px; }
+}
 .apk-banner {
   display: flex;
   align-items: center;
@@ -670,7 +674,21 @@ a.brand--home:focus-visible {
   text-decoration: none;
   color: #fff;
   box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+  overflow: hidden;
+  /* hidden until JS reveals it */
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
 }
+.apk-banner--visible {
+  animation: apk-banner-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  pointer-events: auto;
+}
+.apk-banner[hidden] { display: none !important; }
 .apk-banner__icon {
   flex-shrink: 0;
   width: 44px;
@@ -708,6 +726,17 @@ a.brand--home:focus-visible {
   color: #fff;
   font-size: 13px;
   font-weight: 600;
+}
+.apk-banner__close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.5);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 0 0 4px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .search-wrap {
