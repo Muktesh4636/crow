@@ -2570,12 +2570,22 @@ private fun UpdateAvailableDialog(
 
 @Composable
 private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
-    // null = still checking, false = ok, true = under maintenance
+    // null = still checking
     var maintenanceOn by remember { mutableStateOf<Boolean?>(null) }
     var remHours by remember { mutableStateOf(0) }
     var remMinutes by remember { mutableStateOf(0) }
+
+    // Version update gate — null = checking, false = ok/skippable, true = force update
+    var forceUpdateInfo by remember { mutableStateOf<GameVersionResponse?>(null) }
+    var optionalUpdateInfo by remember { mutableStateOf<GameVersionResponse?>(null) }
+    var dismissedOptional by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
     LaunchedEffect(Unit) {
+        // Run maintenance + version check in parallel
         val s = fetchMaintenanceStatus()
+        val v = fetchGameVersion()
+
         if (s != null && s.maintenance) {
             remHours = s.remainingHours
             remMinutes = s.remainingMinutes
@@ -2583,7 +2593,13 @@ private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
         } else {
             maintenanceOn = false
         }
+
+        if (v != null && v.versionCode > BuildConfig.VERSION_CODE) {
+            if (v.forceUpdate) forceUpdateInfo = v
+            else optionalUpdateInfo = v
+        }
     }
+
     when (maintenanceOn) {
         null -> {
             // Show a simple full-screen loading indicator while we check
@@ -2597,7 +2613,73 @@ private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
             }
         }
         true -> MaintenanceModeScreen(initialHours = remHours, initialMinutes = remMinutes)
-        false -> content()
+        false -> {
+            // Force update blocks the app completely
+            val fv = forceUpdateInfo
+            if (fv != null) {
+                Box(
+                    Modifier.fillMaxSize().background(Color(0xFF1A1A1A)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        Modifier.padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = OrangePrimary,
+                            modifier = Modifier.size(72.dp)
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        Text(
+                            "Update Required",
+                            color = Color.White,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Version ${fv.versionName} is required to continue.\nPlease update the app to proceed.",
+                            color = Color(0xFFBBBBBB),
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(32.dp))
+                        Button(
+                            onClick = {
+                                val url = fv.downloadUrl.let {
+                                    if (it.startsWith("http")) it else "https://fight.pravoo.in$it"
+                                }
+                                context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Download Update", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        }
+                    }
+                }
+            } else {
+                // Optional update — show dialog over the app, dismissible
+                content()
+                val ov = optionalUpdateInfo
+                if (ov != null && !dismissedOptional) {
+                    AppUpdateDialog(
+                        info = ov,
+                        onDownload = {
+                            val url = ov.downloadUrl.let {
+                                if (it.startsWith("http")) it else "https://fight.pravoo.in$it"
+                            }
+                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                        },
+                        onLater = { dismissedOptional = true }
+                    )
+                }
+            }
+        }
     }
 }
 
