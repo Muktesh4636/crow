@@ -390,14 +390,19 @@
       vFs.src = url;
       vFs.muted = true;
       vFs.loop = true;
-      vFs.poster = vIn.poster || "";
+      vFs.poster = "";
     }
     const syncAndShow = () => {
       try { vFs.currentTime = vIn.currentTime || 0; } catch {}
       vIn.pause();
+      vFs.style.opacity = "0";
       fsRoot.hidden = false;
       document.body.style.overflow = "hidden";
       vFs.play().catch(() => {});
+      /* Fade in video once first frame is ready to avoid poster/blank flash */
+      const showVideo = () => { vFs.style.opacity = "1"; };
+      vFs.addEventListener("playing", showVideo, { once: true });
+      setTimeout(showVideo, 400); /* fallback */
       if (typeof window.__closeCfMainBetSheet === "function") window.__closeCfMainBetSheet();
       if (typeof window.__cockfightSyncFsFromMain === "function") window.__cockfightSyncFsFromMain();
     };

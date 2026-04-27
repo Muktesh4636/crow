@@ -3189,6 +3189,7 @@ a.cockfight-ttl:focus-visible {
   object-fit: contain;
   display: block;
   background: #000;
+  transition: opacity 0.25s ease;
 }
 .cockfight-fs-dock {
   display: none !important;
