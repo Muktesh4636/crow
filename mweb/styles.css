@@ -3935,14 +3935,17 @@ a.cockfight-ttl:focus-visible {
   z-index: 1;
   width: 100%;
   max-width: var(--app-max, 480px);
+  min-height: 52vh;
   max-height: 72vh;
   overflow-y: auto;
   background: #1a1a1a;
   border-radius: 16px 16px 0 0;
-  padding: 0 16px 24px;
-  padding-bottom: max(28px, env(safe-area-inset-bottom, 0px));
+  padding: 0 16px 16px;
+  padding-bottom: max(20px, env(safe-area-inset-bottom, 20px));
   box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
   animation: cf-sheet-up 0.22s ease-out;
+  display: flex;
+  flex-direction: column;
 }
 @keyframes cf-sheet-up {
   from {
@@ -3994,7 +3997,8 @@ a.cockfight-ttl:focus-visible {
   letter-spacing: 0.06em;
 }
 .cf-bet-sheet .cock-chips {
-  padding: 6px 0 20px;
+  padding: 6px 0 12px;
+  margin-bottom: auto;
 }
 .cf-bet-sheet__place {
   width: 100%;
@@ -4007,7 +4011,8 @@ a.cockfight-ttl:focus-visible {
   font-weight: 800;
   cursor: pointer;
   font-family: inherit;
-  margin-top: 8px;
+  margin-top: 16px;
+  flex-shrink: 0;
 }
 .cf-bet-sheet__place:active {
   opacity: 0.92;
