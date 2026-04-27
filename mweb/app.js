@@ -764,7 +764,7 @@
             });
           }
           if (methodsWrap) methodsWrap.hidden = false;
-          selectMethod(methods[0]);
+          // Do NOT auto-select — user must explicitly tap a method
           updateSubmit();
         });
       }
