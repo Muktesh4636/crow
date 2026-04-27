@@ -3939,8 +3939,8 @@ a.cockfight-ttl:focus-visible {
   overflow-y: auto;
   background: #1a1a1a;
   border-radius: 16px 16px 0 0;
-  padding: 0 16px 16px;
-  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  padding: 0 16px 24px;
+  padding-bottom: max(28px, env(safe-area-inset-bottom, 0px));
   box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
   animation: cf-sheet-up 0.22s ease-out;
 }
@@ -3994,11 +3994,11 @@ a.cockfight-ttl:focus-visible {
   letter-spacing: 0.06em;
 }
 .cf-bet-sheet .cock-chips {
-  padding: 6px 0 12px;
+  padding: 6px 0 20px;
 }
 .cf-bet-sheet__place {
   width: 100%;
-  padding: 14px;
+  padding: 16px;
   border: none;
   border-radius: 12px;
   background: var(--orange-primary, #ff6b00);
@@ -4007,6 +4007,7 @@ a.cockfight-ttl:focus-visible {
   font-weight: 800;
   cursor: pointer;
   font-family: inherit;
+  margin-top: 8px;
 }
 .cf-bet-sheet__place:active {
   opacity: 0.92;
