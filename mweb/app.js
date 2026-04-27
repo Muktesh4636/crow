@@ -897,6 +897,46 @@
     setPay("upi");
   })();
 
+  const txnLoaded = { deposits: false, withdrawals: false };
+  async function loadTransactions(which) {
+    if (!K) return;
+    const listEl = document.getElementById(which === "deposits" ? "txn-list-deposits" : "txn-list-withdrawals");
+    if (!listEl) return;
+    if (txnLoaded[which]) return;
+    listEl.innerHTML = '<p class="txn-loading">Loading…</p>';
+    const { data, error } = which === "deposits" ? await K.fetchDepositsMine() : await K.fetchWithdrawsMine();
+    if (error) {
+      listEl.innerHTML = `<p class="txn-empty">${error}</p>`;
+      return;
+    }
+    txnLoaded[which] = true;
+    if (!data || !data.length) {
+      listEl.innerHTML = `<p class="txn-empty">No ${which} yet.</p>`;
+      return;
+    }
+    listEl.innerHTML = data.map((item) => {
+      const amount = item.amount || item.total_amount || item.credit || "–";
+      const status = (item.status || item.payment_status || "pending").toLowerCase();
+      const date = item.created_at || item.date || item.timestamp || "";
+      const dateStr = date ? new Date(date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "–";
+      const id = item.id || item.transaction_id || "";
+      const statusClass = status.includes("success") || status.includes("approv") || status.includes("complet")
+        ? "txn-card--success" : status.includes("reject") || status.includes("fail")
+        ? "txn-card--fail" : "txn-card--pending";
+      const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+      return `<div class="txn-card ${statusClass}">
+        <div class="txn-card__row">
+          <span class="txn-card__label">${which === "deposits" ? "Deposit" : "Withdrawal"}</span>
+          <span class="txn-card__amount">₹${amount}</span>
+        </div>
+        <div class="txn-card__row txn-card__row--sub">
+          <span class="txn-card__date">${dateStr}${id ? " · #" + id : ""}</span>
+          <span class="txn-card__status">${statusLabel}</span>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
   async function loadProfileForm() {
     if (!K) return;
     const hint = document.getElementById("profile-form-hint");
@@ -966,9 +1006,25 @@
         if (name) {
           showProfileView(name);
           if (name === "details") loadProfileForm();
+          if (name === "transactions") loadTransactions("deposits");
         }
         return;
       }
+    });
+
+    /* Transaction tab switching */
+    profilePanel.addEventListener("click", (e) => {
+      const tab = e.target.closest("[data-txn-tab]");
+      if (!tab) return;
+      const which = tab.getAttribute("data-txn-tab");
+      profilePanel.querySelectorAll(".txn-tab").forEach((t) => {
+        const active = t.getAttribute("data-txn-tab") === which;
+        t.classList.toggle("txn-tab--active", active);
+        t.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      document.getElementById("txn-list-deposits").hidden = which !== "deposits";
+      document.getElementById("txn-list-withdrawals").hidden = which !== "withdrawals";
+      loadTransactions(which);
     });
   }
 
