@@ -350,6 +350,9 @@
   }
 
   function closeCockfightFullscreen() {
+    try {
+      if (screen.orientation && typeof screen.orientation.unlock === "function") screen.orientation.unlock();
+    } catch (_) {}
     /* Exit native fullscreen if active */
     if (document.fullscreenElement || document.webkitFullscreenElement) {
       (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
@@ -399,15 +402,45 @@
       vFs.loop = true;
       vFs.poster = "";
     }
+    /** Browser fullscreen + landscape lock — mobile plays wide; portrait lock removed on close */
+    function tryLandscapeFullscreenForCockfight() {
+      const lockLandscape = () => {
+        try {
+          const o = screen.orientation;
+          if (o && typeof o.lock === "function") {
+            return o.lock("landscape").catch(() => o.lock("landscape-primary").catch(() => {}));
+          }
+        } catch (_) {}
+        return Promise.resolve();
+      };
+
+      const rfs =
+        fsRoot.requestFullscreen ||
+        fsRoot.webkitRequestFullscreen ||
+        fsRoot.webkitRequestFullScreen ||
+        fsRoot.msRequestFullscreen;
+
+      if (rfs) {
+        Promise.resolve(rfs.call(fsRoot))
+          .then(lockLandscape)
+          .catch(() => lockLandscape());
+      } else {
+        lockLandscape();
+      }
+    }
+
     const syncAndShow = () => {
       try { vFs.currentTime = vIn.currentTime || 0; } catch {}
       vIn.pause();
       vFs.style.opacity = "0";
       fsRoot.hidden = false;
       document.body.style.overflow = "hidden";
+      tryLandscapeFullscreenForCockfight();
       vFs.play().catch(() => {});
       /* Fade in video once first frame is ready to avoid poster/blank flash */
-      const showVideo = () => { vFs.style.opacity = "1"; };
+      const showVideo = () => {
+        vFs.style.opacity = "1";
+      };
       vFs.addEventListener("playing", showVideo, { once: true });
       setTimeout(showVideo, 400); /* fallback */
       if (typeof window.__closeCfMainBetSheet === "function") window.__closeCfMainBetSheet();
