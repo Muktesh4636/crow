@@ -1667,7 +1667,7 @@
   window.addEventListener("hashchange", onHash);
   onHash();
 
-  /* APK download banner — Android only, show after 3 s on first visit */
+  /* APK download banner — Android only, show after 3 s on every page load */
   (function setupApkBanner() {
     const banner = document.getElementById("apk-banner");
     const closeBtn = document.getElementById("apk-banner-close");
@@ -1676,7 +1676,6 @@
     const ua = navigator.userAgent || "";
     const isApple = /iPhone|iPad|iPod|Macintosh/i.test(ua);
     if (isApple) { banner.hidden = true; return; }
-    if (sessionStorage.getItem("apk-banner-dismissed")) return;
     setTimeout(() => {
       banner.classList.add("apk-banner--visible");
     }, 3000);
@@ -1685,7 +1684,6 @@
         e.preventDefault();
         e.stopPropagation();
         banner.hidden = true;
-        sessionStorage.setItem("apk-banner-dismissed", "1");
       });
     }
   })();
