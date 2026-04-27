@@ -8943,9 +8943,9 @@ fun WalletScreen(onBack: () -> Unit, onDepositClick: (walletPaymentMethod: Strin
                 Spacer(Modifier.height(10.dp))
                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     listOf(
-                        Triple("upi", "UPI", Icons.Default.QrCodeScanner),
-                        Triple("bank", "Bank Account", Icons.Default.AccountBalance)
-                    ).forEach { (method, label, icon) ->
+                        Triple("upi", "UPI", R.drawable.upi_logo),
+                        Triple("bank", "Bank Account", R.drawable.bank_logo)
+                    ).forEach { (method, label, drawableRes) ->
                         val selected = paymentMethod == method
                         Surface(
                             modifier = Modifier.weight(1f).height(100.dp).clickable { paymentMethod = method },
@@ -8955,7 +8955,12 @@ fun WalletScreen(onBack: () -> Unit, onDepositClick: (walletPaymentMethod: Strin
                             shadowElevation = 1.dp
                         ) {
                             Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                                Icon(icon, null, tint = OrangePrimary, modifier = Modifier.size(28.dp))
+                                Image(
+                                    painter = painterResource(id = drawableRes),
+                                    contentDescription = label,
+                                    modifier = Modifier.height(32.dp).widthIn(max = 80.dp),
+                                    contentScale = ContentScale.Fit
+                                )
                                 Column {
                                     Text(label, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                     Text("0% commission", color = Color.Gray, fontSize = 12.sp)
