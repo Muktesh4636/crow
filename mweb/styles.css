@@ -3128,8 +3128,8 @@ a.cockfight-ttl:focus-visible {
 /* Cockfight: maximize on stream + fullscreen layer (same as .live-fsdialog) */
 .cockfight-stream__max {
   position: absolute;
-  top: max(8px, env(safe-area-inset-top, 0px));
-  bottom: auto;
+  top: auto;
+  bottom: max(8px, env(safe-area-inset-bottom, 0px));
   right: 8px;
   z-index: 6;
   display: flex;
