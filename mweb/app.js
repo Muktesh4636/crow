@@ -571,6 +571,7 @@
       const dialog = document.getElementById("dep-dialog");
       const closeBtn = document.getElementById("dep-dialog-close");
       const amountDisplay = document.getElementById("dep-amount-display");
+      const timerEl = document.getElementById("dep-timer");
       const loadingEl = document.getElementById("dep-loading");
       const methodsWrap = document.getElementById("dep-methods-wrap");
       const methodsRow = document.getElementById("dep-methods-row");
@@ -597,6 +598,22 @@
       let selectedMethod = null;
       let selectedFile = null;
       let depositAmount = 0;
+      let timerInterval = null;
+
+      function startTimer() {
+        let secs = 600;
+        function fmt(s) {
+          return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+        }
+        if (timerEl) timerEl.textContent = fmt(secs);
+        clearInterval(timerInterval);
+        timerInterval = setInterval(() => {
+          secs = Math.max(0, secs - 1);
+          if (timerEl) timerEl.textContent = fmt(secs);
+          if (secs === 0) clearInterval(timerInterval);
+        }, 1000);
+      }
+      function stopTimer() { clearInterval(timerInterval); }
 
       function showErr(msg) {
         if (!errEl) return;
@@ -708,6 +725,7 @@
         if (submitBtn) submitBtn.disabled = true;
         dialog.hidden = false;
         document.body.style.overflow = "hidden";
+        startTimer();
 
         K.fetchPaymentMethodsDetails().then(({ data, error }) => {
           if (loadingEl) loadingEl.hidden = true;
@@ -717,9 +735,21 @@
           }
           methods = data;
           if (methodsRow) {
-            methodsRow.innerHTML = methods.map((m) =>
-              `<button type="button" class="dep-method-btn" data-mid="${m.id}">${m.name || m.type}</button>`
-            ).join("");
+            const iconColors = {
+              PHONEPE: "#5f259f", GPAY: "#4285f4", PAYTM: "#002970",
+              UPI: "#ff6b00", BANK: "#1565c0", QR: "#388e3c"
+            };
+            methodsRow.innerHTML = methods.map((m) => {
+              const t = (m.type || "UPI").toUpperCase();
+              const color = iconColors[Object.keys(iconColors).find((k) => t.includes(k)) || "UPI"] || "#ff6b00";
+              return `<button type="button" class="dep-method-btn" data-mid="${m.id}">
+                <span class="dep-method-btn__icon" style="background:${color}18;">
+                  <svg viewBox="0 0 24 24" width="22" height="22"><path fill="${color}" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
+                </span>
+                <span class="dep-method-btn__name">${m.name || m.type}</span>
+                <span class="dep-method-btn__arrow">👆</span>
+              </button>`;
+            }).join("");
             methodsRow.querySelectorAll(".dep-method-btn").forEach((b) => {
               b.addEventListener("click", () => {
                 const m = methods.find((x) => x.id === Number(b.dataset.mid));
@@ -736,6 +766,7 @@
       function closeDialog() {
         if (dialog) dialog.hidden = true;
         document.body.style.overflow = "";
+        stopTimer();
         if (depFileIn) depFileIn.value = "";
         selectedFile = null;
         if (filePreview) filePreview.hidden = true;
@@ -774,7 +805,7 @@
           if (submitTxt) submitTxt.textContent = "Submitting…";
           const { data, error } = await K.postDepositUpload(selectedFile, depositAmount, selectedMethod.id);
           submitBtn.disabled = false;
-          if (submitTxt) submitTxt.textContent = "Submit Deposit Request";
+          if (submitTxt) submitTxt.textContent = "Submit Payment Proof";
           if (error) {
             showErr(error);
           } else {

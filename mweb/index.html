@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=17" />
+  <link rel="stylesheet" href="styles.css?v=18" />
 </head>
 <body>
   <div class="app-frame">
@@ -44,62 +44,65 @@
         <!-- Deposit flow full-page dialog -->
         <div class="dep-dialog" id="dep-dialog" hidden>
           <div class="dep-dialog__page">
+
+            <!-- Header: back + "Payment" + timer -->
             <header class="dep-dialog__topbar">
               <button type="button" class="dep-dialog__back" id="dep-dialog-close" aria-label="Back">
                 <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
               </button>
-              <h2 class="dep-dialog__topbar-title">Complete Deposit</h2>
-              <span aria-hidden="true"></span>
+              <h2 class="dep-dialog__topbar-title">Payment</h2>
+              <div class="dep-dialog__timer" id="dep-timer">10:00</div>
             </header>
 
-            <!-- Amount banner -->
-            <div class="dep-dialog__amount-banner">
-              <span class="dep-dialog__amount-label">Amount to Pay</span>
-              <span class="dep-dialog__amount-value" id="dep-amount-display">₹1,000</span>
-            </div>
+            <div class="dep-dialog__scroll">
 
-            <div class="dep-dialog__body" id="dep-dialog-body">
+              <!-- Amount card -->
+              <div class="dep-dialog__amount-card">
+                <span class="dep-dialog__amount-label">Amount Payable</span>
+                <span class="dep-dialog__amount-value" id="dep-amount-display">₹1,000</span>
+                <span class="dep-dialog__amount-hint">Fill in UTR after successful payment</span>
+              </div>
+
               <!-- Loading -->
               <div class="dep-dialog__loading" id="dep-loading">
                 <div class="dep-dialog__spinner"></div>
                 <p>Loading payment details…</p>
               </div>
 
-              <!-- Methods tabs -->
-              <div class="dep-dialog__methods" id="dep-methods-wrap" hidden>
-                <p class="dep-dialog__section-label">Select Payment Method</p>
-                <div class="dep-dialog__methods-row" id="dep-methods-row"></div>
+              <!-- Choose Payment Method -->
+              <div class="dep-dialog__section" id="dep-methods-wrap" hidden>
+                <p class="dep-dialog__section-title">Choose Payment Method</p>
+                <div class="dep-dialog__methods-list" id="dep-methods-row"></div>
               </div>
 
-              <!-- Payment details card -->
+              <!-- Payment details (UPI / Bank) -->
               <div class="dep-dialog__card" id="dep-details-card" hidden>
-                <!-- UPI block -->
                 <div id="dep-upi-block" hidden>
-                  <p class="dep-dialog__section-label" id="dep-upi-label">Pay via UPI</p>
                   <div class="dep-dialog__upi-row">
-                    <span class="dep-dialog__upi-id" id="dep-upi-id"></span>
-                    <button type="button" class="dep-dialog__copy" id="dep-copy-upi" aria-label="Copy UPI ID">
-                      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                    </button>
+                    <div class="dep-dialog__upi-info">
+                      <span class="dep-dialog__upi-label" id="dep-upi-label">UPI ID</span>
+                      <span class="dep-dialog__upi-id" id="dep-upi-id"></span>
+                    </div>
+                    <button type="button" class="dep-dialog__copy" id="dep-copy-upi" aria-label="Copy UPI ID">Copy</button>
                   </div>
                   <div class="dep-dialog__qr-wrap" id="dep-qr-wrap" hidden>
                     <img id="dep-qr-img" class="dep-dialog__qr" src="" alt="QR Code" />
                   </div>
                 </div>
-
-                <!-- Bank block -->
                 <div id="dep-bank-block" hidden>
-                  <p class="dep-dialog__section-label">Pay via Bank Transfer</p>
                   <div class="dep-dialog__bank-grid" id="dep-bank-grid"></div>
                 </div>
               </div>
 
-              <!-- Upload section -->
+              <!-- Upload screenshot section -->
               <div class="dep-dialog__upload-section" id="dep-upload-section" hidden>
-                <p class="dep-dialog__section-label">After paying, upload your screenshot</p>
-                <button type="button" class="dep-dialog__upload-btn" id="dep-upload-btn">
-                  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
-                  Upload Payment Screenshot
+                <div class="dep-dialog__upload-head">
+                  <p class="dep-dialog__section-title">Upload Payment Screenshot</p>
+                  <span class="dep-dialog__upload-hint">Max 10MB · JPG, PNG</span>
+                </div>
+                <button type="button" class="dep-dialog__upload-box" id="dep-upload-btn">
+                  <svg viewBox="0 0 24 24" width="44" height="44" aria-hidden="true"><path fill="#bbb" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                  <span class="dep-dialog__upload-box-txt">Tap to select screenshot</span>
                 </button>
                 <div class="dep-dialog__file-preview" id="dep-file-preview" hidden>
                   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#22c55e" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -110,10 +113,13 @@
 
               <div class="dep-dialog__err" id="dep-err" hidden></div>
 
-              <button type="button" class="dep-dialog__submit" id="dep-submit-btn" disabled>
-                <span id="dep-submit-txt">Submit Deposit Request</span>
-              </button>
-            </div>
+              <div class="dep-dialog__footer">
+                <button type="button" class="dep-dialog__submit" id="dep-submit-btn" disabled>
+                  <span id="dep-submit-txt">Submit Payment Proof</span>
+                </button>
+              </div>
+
+            </div><!-- /.dep-dialog__scroll -->
           </div>
         </div>
 
@@ -1094,7 +1100,7 @@
       </div>
     </div>
   </div>
-  <script src="api.js?v=17" defer></script>
-  <script src="app.js?v=17" defer></script>
+  <script src="api.js?v=18" defer></script>
+  <script src="app.js?v=18" defer></script>
 </body>
 </html>
