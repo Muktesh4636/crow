@@ -3626,7 +3626,9 @@ a.cockfight-ttl:focus-visible {
 
 /* Upload section */
 .dep-dialog__upload-section {
-  padding: 16px 16px 0;
+  padding: 24px 16px 0;
+  border-top: 1px solid #eee;
+  margin-top: 20px;
   display: flex;
   flex-direction: column;
   gap: 10px;
