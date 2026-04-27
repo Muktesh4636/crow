@@ -723,7 +723,7 @@
         if (loadingEl) loadingEl.hidden = false;
         if (methodsWrap) methodsWrap.hidden = true;
         if (detailsCard) detailsCard.hidden = true;
-        if (uploadSection) uploadSection.hidden = true;
+        if (uploadSection) uploadSection.hidden = false;
         if (filePreview) filePreview.hidden = true;
         if (errEl) errEl.hidden = true;
         if (submitBtn) submitBtn.disabled = true;
