@@ -3827,8 +3827,8 @@ a.cockfight-ttl:focus-visible {
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  gap: 6px;
-  padding: 10px 10px max(10px, env(safe-area-inset-bottom, 0px));
+  gap: 5px;
+  padding: 6px 8px max(6px, env(safe-area-inset-bottom, 0px));
   margin: 0;
   background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 35%, rgba(0,0,0,0.82) 100%);
   pointer-events: none;
@@ -3854,14 +3854,14 @@ a.cockfight-ttl:focus-visible {
 .cockfight-side-btn {
   flex: 1 1 0;
   min-width: 0;
-  min-height: 178px;
+  min-height: 110px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 22px 8px 20px;
+  padding: 14px 6px 12px;
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   font-family: inherit;
   cursor: pointer;
   color: #fff;
@@ -3887,13 +3887,13 @@ a.cockfight-ttl:focus-visible {
   box-shadow: 0 0 0 3px var(--orange-primary, #ff6b00);
 }
 .cockfight-side-btn__odd {
-  font-size: 22px;
+  font-size: 17px;
   font-weight: 800;
   color: #fff;
   letter-spacing: 0.02em;
 }
 .cockfight-side-btn__lab {
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 700;
   color: #fff;
 }
