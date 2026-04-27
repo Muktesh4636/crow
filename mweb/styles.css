@@ -3643,7 +3643,7 @@ a.cockfight-ttl:focus-visible {
 .cock-vs-bar {
   display: flex;
   align-items: center;
-  margin: 0 12px 0;
+  margin: 16px 12px 0;
   border-radius: 10px;
   overflow: hidden;
   height: 44px;
@@ -3670,12 +3670,12 @@ a.cockfight-ttl:focus-visible {
   display: flex;
   flex-direction: row;
   gap: 8px;
-  padding: 10px 12px 4px;
+  padding: 14px 12px 4px;
 }
 
 /* Cockfight: chips always visible below cards */
 .cock-chips-wrap {
-  padding: 6px 12px 10px;
+  padding: 12px 12px 14px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
