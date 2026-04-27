@@ -3643,7 +3643,7 @@ a.cockfight-ttl:focus-visible {
 .cock-vs-bar {
   display: flex;
   align-items: center;
-  margin: 16px 12px 24px;
+  margin: 16px 12px 40px;
   border-radius: 10px;
   overflow: hidden;
   height: 44px;
