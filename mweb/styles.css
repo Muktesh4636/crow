@@ -1661,6 +1661,27 @@ a.video-card--link {
   min-height: 26px;
   line-height: 0;
 }
+.bottom-nav__ico--img {
+  height: 34px;
+  min-height: 34px;
+}
+.bottom-nav__promo-img {
+  display: block;
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: filter 0.15s ease;
+}
+/* Inactive: full-color icon */
+.bottom-nav__item:not(.bottom-nav__item--on) .bottom-nav__promo-img {
+  filter: none;
+}
+/* Active tab (e.g. Promotion): match other nav items — white icon */
+.bottom-nav__item--on .bottom-nav__promo-img {
+  filter: brightness(0) invert(1);
+}
 .bottom-nav__ico--svg {
   display: flex;
   align-items: center;
