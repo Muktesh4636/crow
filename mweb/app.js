@@ -605,12 +605,29 @@
       const submitTxt = document.getElementById("dep-submit-txt");
       const depFileIn = document.getElementById("dep-screenshot-input");
       const upiLabel = document.getElementById("dep-upi-label");
+      const methodsTitle = document.getElementById("dep-methods-title");
 
       let methods = [];
       let selectedMethod = null;
       let selectedFile = null;
       let depositAmount = 0;
       let timerInterval = null;
+      let depositChannel = "upi";
+
+      /** Whether this method is a bank transfer (not UPI / app / QR). */
+      function isBankDepositMethod(m) {
+        const t = (m.type || "").toUpperCase();
+        if (t.includes("BANK")) return true;
+        if (t.includes("UPI") || t.includes("GPAY") || t.includes("PHONE") || t.includes("PAYTM") || t.includes("QR")) {
+          return false;
+        }
+        if (m.upiId) return false;
+        return !!(m.accountNumber || m.ifsc || m.bankName);
+      }
+
+      function filterMethodsByChannel(list, channel) {
+        return (list || []).filter((m) => (channel === "bank" ? isBankDepositMethod(m) : !isBankDepositMethod(m)));
+      }
 
       function startTimer() {
         let secs = 600;
@@ -725,8 +742,13 @@
         if (submitBtn) submitBtn.disabled = !selectedFile || !selectedMethod;
       }
 
-      function openDialog(amount) {
+      function openDialog(amount, payChannel) {
         if (!dialog) return;
+        depositChannel = payChannel === "bank" ? "bank" : "upi";
+        if (methodsTitle) {
+          methodsTitle.textContent =
+            depositChannel === "bank" ? "Bank transfer" : "Pay via UPI";
+        }
         depositAmount = amount;
         selectedFile = null;
         selectedMethod = null;
@@ -749,7 +771,15 @@
             showErr(error || "No payment methods available. Please contact support.");
             return;
           }
-          methods = data;
+          methods = filterMethodsByChannel(data, depositChannel);
+          if (!methods.length) {
+            showErr(
+              depositChannel === "bank"
+                ? "No bank transfer methods available. Try UPI or contact support."
+                : "No UPI methods available. Try bank transfer or contact support."
+            );
+            return;
+          }
           if (methodsRow) {
             const iconColors = {
               PHONEPE: "#5f259f", GPAY: "#4285f4", PAYTM: "#002970",
@@ -852,7 +882,7 @@
         window.alert("Minimum deposit is ₹100.");
         return;
       }
-      if (window.__openDepositDialog) window.__openDepositDialog(amount);
+      if (window.__openDepositDialog) window.__openDepositDialog(amount, pay);
     });
     btnWdr?.addEventListener("click", async () => {
       if (!K || !K.isAuthed()) {
