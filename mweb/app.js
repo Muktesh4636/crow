@@ -347,6 +347,7 @@
     if (document.fullscreenElement || document.webkitFullscreenElement) {
       (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
     }
+    if (typeof window.__cockfightSyncMainFromFs === "function") window.__cockfightSyncMainFromFs();
     const fsRoot = document.getElementById("cockfight-fullscreen");
     const vFs = document.getElementById("cockfight-video-fs");
     const vIn = document.getElementById("cockfight-video");
@@ -370,16 +371,7 @@
     const vIn = document.getElementById("cockfight-video");
     if (!vIn) return;
     if (document.documentElement.dataset.tab !== "cockfight") return;
-
-    /* Prefer native browser fullscreen on the existing video — zero flash */
-    const reqFs = vIn.requestFullscreen || vIn.webkitRequestFullscreen;
-    if (reqFs) {
-      reqFs.call(vIn).catch(() => {
-        /* If native FS is blocked (e.g. iOS), fall back to overlay dialog */
-        openCockfightFsDialog();
-      });
-      return;
-    }
+    /* Always use overlay dialog so betting strip (APK-style) stays visible */
     openCockfightFsDialog();
   }
 
@@ -405,6 +397,7 @@
       fsRoot.hidden = false;
       document.body.style.overflow = "hidden";
       vFs.play().catch(() => {});
+      if (typeof window.__cockfightSyncFsFromMain === "function") window.__cockfightSyncFsFromMain();
     };
     if (vFs.readyState >= 1) {
       syncAndShow();
@@ -1300,28 +1293,78 @@
     setRegion(0);
   })();
   (function initCockfight() {
-    const odds = document.getElementById("cockfight-odds");
-    const chips = document.getElementById("cock-chips");
-    if (odds) {
-      odds.addEventListener("click", (e) => {
-        const btn = e.target.closest(".cock-portrait");
-        if (!btn || !odds.contains(btn)) return;
-        odds.querySelectorAll(".cock-portrait").forEach((b) => {
-          b.classList.toggle("is-selected", b === btn);
-          b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+    function setCfSide(side) {
+      ["cockfight-odds", "cockfight-fs-odds"].forEach((id) => {
+        const root = document.getElementById(id);
+        if (!root) return;
+        root.querySelectorAll(".cock-portrait").forEach((b) => {
+          const on = b.getAttribute("data-cf-side") === side;
+          b.classList.toggle("is-selected", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
         });
       });
     }
-    if (chips) {
+    function setCfAmt(amtStr) {
+      ["cock-chips", "cockfight-fs-chips"].forEach((id) => {
+        const root = document.getElementById(id);
+        if (!root) return;
+        root.querySelectorAll(".cock-chip").forEach((c) => {
+          const on = c.getAttribute("data-amt") === String(amtStr);
+          c.classList.toggle("is-on", on);
+        });
+      });
+    }
+    function syncCfFsFromMain() {
+      const mainOdds = document.getElementById("cockfight-odds");
+      const sel = mainOdds && mainOdds.querySelector(".cock-portrait.is-selected");
+      const side = sel ? sel.getAttribute("data-cf-side") : "Meron";
+      setCfSide(side || "Meron");
+      const mainChips = document.getElementById("cock-chips");
+      const chipOn = mainChips && mainChips.querySelector(".cock-chip.is-on");
+      const amt = chipOn ? chipOn.getAttribute("data-amt") : "100";
+      setCfAmt(amt || "100");
+    }
+    function syncCfMainFromFs() {
+      const fsOdds = document.getElementById("cockfight-fs-odds");
+      const sel = fsOdds && fsOdds.querySelector(".cock-portrait.is-selected");
+      const side = sel ? sel.getAttribute("data-cf-side") : "Meron";
+      setCfSide(side || "Meron");
+      const fsChips = document.getElementById("cockfight-fs-chips");
+      const chipOn = fsChips && fsChips.querySelector(".cock-chip.is-on");
+      const amt = chipOn ? chipOn.getAttribute("data-amt") : "100";
+      setCfAmt(amt || "100");
+    }
+    window.__cockfightSyncFsFromMain = syncCfFsFromMain;
+    window.__cockfightSyncMainFromFs = syncCfMainFromFs;
+
+    ["cockfight-odds", "cockfight-fs-odds"].forEach((id) => {
+      const odds = document.getElementById(id);
+      if (!odds) return;
+      odds.addEventListener("click", (e) => {
+        const btn = e.target.closest(".cock-portrait");
+        if (!btn || !odds.contains(btn)) return;
+        const side = btn.getAttribute("data-cf-side");
+        if (side) setCfSide(side);
+      });
+    });
+    ["cock-chips", "cockfight-fs-chips"].forEach((id) => {
+      const chips = document.getElementById(id);
+      if (!chips) return;
       chips.addEventListener("click", (e) => {
         const c = e.target.closest(".cock-chip");
         if (!c || !chips.contains(c)) return;
-        chips.querySelectorAll(".cock-chip").forEach((x) => x.classList.toggle("is-on", x === c));
+        const amt = c.getAttribute("data-amt");
+        if (amt) setCfAmt(amt);
       });
-    }
+    });
+
     const sideMap = { Meron: "MERON", Draw: "DRAW", Wala: "WALA" };
-    document.getElementById("cock-place-btn")?.addEventListener("click", async () => {
-      const sideEl = document.querySelector("#cockfight-odds .cock-portrait.is-selected");
+    async function placeCockfightBet() {
+      const fsOpen = document.getElementById("cockfight-fullscreen");
+      const inFs = fsOpen && !fsOpen.hidden;
+      const sideRoot = inFs ? document.getElementById("cockfight-fs-odds") : document.getElementById("cockfight-odds");
+      const chipRoot = inFs ? document.getElementById("cockfight-fs-chips") : document.getElementById("cock-chips");
+      const sideEl = sideRoot && sideRoot.querySelector(".cock-portrait.is-selected");
       if (!sideEl) {
         window.alert("Pick Meron, Draw, or Wala");
         return;
@@ -1336,7 +1379,7 @@
       }
       const lab = sideEl.getAttribute("data-cf-side");
       const apiSide = sideMap[lab] || "MERON";
-      const chip = document.querySelector("#cock-chips .cock-chip.is-on");
+      const chip = chipRoot && chipRoot.querySelector(".cock-chip.is-on");
       const amt = parseInt(chip ? chip.getAttribute("data-amt") : "100", 10) || 100;
       const { data, error } = await K.postMeronWalaBet(apiSide, amt);
       if (error) window.alert(error);
@@ -1345,7 +1388,9 @@
         else await refreshAllBalances();
         window.alert("Bet placed");
       }
-    });
+    }
+    document.getElementById("cock-place-btn")?.addEventListener("click", placeCockfightBet);
+    document.getElementById("cockfight-fs-place-btn")?.addEventListener("click", placeCockfightBet);
     const hModal = document.getElementById("cf-history");
     const openH = async () => {
       if (hModal) hModal.hidden = false;
@@ -1405,6 +1450,7 @@
     };
     const closeH = () => hModal && (hModal.hidden = true);
     document.getElementById("cock-open-history")?.addEventListener("click", openH);
+    document.getElementById("cockfight-fs-open-history")?.addEventListener("click", openH);
     document.getElementById("cf-history-close")?.addEventListener("click", closeH);
     document.getElementById("cf-history-backdrop")?.addEventListener("click", closeH);
     document.addEventListener("keydown", (e) => {
