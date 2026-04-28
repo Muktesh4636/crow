@@ -120,17 +120,9 @@
     // ── Step 1: If start time is in the future, ALWAYS show countdown first ──
     if (startMs && startMs > nowMs) {
       hideCockfightVideoOverlay();
-      startCockfightCountdown(startMs, async () => {
+      startCockfightCountdown(startMs, () => {
         hideCockfightCountdown();
-        // Re-fetch to get fresh signed URL when match starts
-        const fresh = await K.fetchMeronWalaInfo();
-        const flv = fresh?.latest_round_video;
-        if (!flv || !flv.url) {
-          if (flv?.requires_authentication) showCockfightVideoOverlay("login");
-          else showCockfightVideoOverlay("unavailable");
-          return;
-        }
-        loadAndPlayCockfightVideo(video, flv.url, 0);
+        pollForCockfightUrl(video, 0);
       });
       return;
     }
@@ -269,6 +261,44 @@
     if (overlay) overlay.hidden = true;
   }
 
+  let cfPollInterval = null;
+
+  function pollForCockfightUrl(video, seekSeconds) {
+    // Show a "waiting for stream" state on the countdown overlay
+    const overlay = document.getElementById("cf-countdown");
+    const timerEl = document.getElementById("cf-countdown-timer");
+    const labelEl = document.querySelector(".cf-countdown__label");
+    const subEl = document.querySelector(".cf-countdown__sub");
+    if (overlay) {
+      overlay.hidden = false;
+      if (timerEl) timerEl.textContent = "●●●";
+      if (labelEl) labelEl.textContent = "Match is starting...";
+      if (subEl) subEl.textContent = "Waiting for live stream...";
+    }
+
+    if (cfPollInterval) { clearInterval(cfPollInterval); cfPollInterval = null; }
+
+    cfPollInterval = setInterval(async () => {
+      // Stop polling if user navigated away
+      if (location.hash !== "#cockfight") {
+        clearInterval(cfPollInterval); cfPollInterval = null;
+        return;
+      }
+      const fresh = await K.fetchMeronWalaInfo();
+      const flv = fresh?.latest_round_video;
+      if (flv?.url) {
+        clearInterval(cfPollInterval); cfPollInterval = null;
+        if (overlay) overlay.hidden = true;
+        loadAndPlayCockfightVideo(video, flv.url, seekSeconds);
+      } else if (flv?.requires_authentication) {
+        clearInterval(cfPollInterval); cfPollInterval = null;
+        if (overlay) overlay.hidden = true;
+        showCockfightVideoOverlay("login");
+      }
+      // else: no url yet — keep polling every second
+    }, 1000);
+  }
+
   function showCockfightVideoOverlay(type) {
     let overlay = document.getElementById("cf-video-overlay");
     if (!overlay) {
@@ -368,9 +398,9 @@
     if (vCf) {
       if (key !== "cockfight") {
         vCf.pause();
-        // Reset so next visit re-checks schedule
         vCf.removeAttribute("data-cf-src");
         hideCockfightCountdown();
+        if (cfPollInterval) { clearInterval(cfPollInterval); cfPollInterval = null; }
       }
     }
     const vGu = document.getElementById("gundu-video");
