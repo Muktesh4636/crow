@@ -335,10 +335,11 @@
     }
     const vCf = document.getElementById("cockfight-video");
     if (vCf) {
-      if (key === "cockfight") {
-        vCf.play().catch(() => {});
-      } else {
+      if (key !== "cockfight") {
         vCf.pause();
+        // Reset so next visit re-checks schedule
+        vCf.removeAttribute("data-cf-src");
+        hideCockfightCountdown();
       }
     }
     const vGu = document.getElementById("gundu-video");
