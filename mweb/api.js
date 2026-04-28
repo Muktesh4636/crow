@@ -27,6 +27,8 @@ window.KokorokoApi = (function () {
   const AUTH_DEPOSIT_UPLOAD = "/api/auth/deposits/upload-proof/";
   const SUPPORT_CONTACTS = "/api/support/contacts/";
 
+  const GAME_MERON_WALA_INFO = "/api/game/meron-wala/info/";
+  const GAME_MERON_WALA_LATEST_VIDEO = "/api/game/meron-wala/latest-round-video/";
   const GAME_MERON_WALA_BET = "/api/game/meron-wala/bet/";
   const GAME_MERON_WALA_BETS_MINE = "/api/game/meron-wala/bets/mine/";
   const GAME_GUNDU_BET = "/api/game/bet/";
@@ -692,6 +694,30 @@ window.KokorokoApi = (function () {
     }
   }
 
+  async function fetchMeronWalaInfo() {
+    const { ok, text, status } = await apiFetch(GAME_MERON_WALA_INFO, { method: "GET" });
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchMeronWalaInfo();
+      clearSession(); dispatchAuth();
+      return null;
+    }
+    if (!ok || !text) return null;
+    try { return JSON.parse(text); } catch { return null; }
+  }
+
+  async function fetchMeronWalaLatestVideo() {
+    const { ok, text, status } = await apiFetch(GAME_MERON_WALA_LATEST_VIDEO, { method: "GET" });
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchMeronWalaLatestVideo();
+      clearSession(); dispatchAuth();
+      return null;
+    }
+    if (!ok || !text) return null;
+    try { return JSON.parse(text); } catch { return null; }
+  }
+
   async function fetchSupportContacts() {
     const { ok, text } = await apiFetch(SUPPORT_CONTACTS, { method: "GET" });
     if (!ok || !text) return null;
@@ -766,6 +792,8 @@ window.KokorokoApi = (function () {
     fetchGundataBetsMine,
     postMeronWalaBet,
     fetchMeronWalaBetsMine,
+    fetchMeronWalaInfo,
+    fetchMeronWalaLatestVideo,
     fetchSupportContacts,
     gunduVirtualUrl,
     formatRupeeBalanceForDisplay,

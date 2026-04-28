@@ -106,15 +106,39 @@
     return m[0].id || 1;
   }
   /** #cockfight only: local MP4 (assets/cockfight_live_stream.mp4) — no HLS, no controls, no forward seek, no pause. */
-  function setupCockfightLiveStream() {
+  async function setupCockfightLiveStream() {
     const video = document.getElementById("cockfight-video");
     if (!video) return;
-    const src = "assets/cockfight_live_stream.mp4";
-    if (video.getAttribute("data-cf-wired") !== "1") {
+
+    // Fetch info (includes session status + latest video URL)
+    const info = await K.fetchMeronWalaInfo();
+    const lv = info?.latest_round_video;
+
+    // --- Determine video URL ---
+    let src = null;
+    if (lv) {
+      if (lv.requires_authentication && !lv.url) {
+        // user not logged in — show overlay
+        showCockfightVideoOverlay("login");
+        return;
+      }
+      src = lv.url || null;
+    }
+
+    if (!src) {
+      showCockfightVideoOverlay("unavailable");
+      return;
+    }
+
+    hideCockfightVideoOverlay();
+
+    if (video.getAttribute("data-cf-src") !== src) {
+      video.removeAttribute("data-cf-wired");
       video.replaceChildren();
       video.src = src;
-      video.setAttribute("data-cf-wired", "1");
+      video.setAttribute("data-cf-src", src);
     }
+
     if (!cockfightLiveBound) {
       cockfightLiveBound = true;
       video.addEventListener("timeupdate", () => {
@@ -127,9 +151,7 @@
       video.addEventListener("seeking", () => {
         if (location.hash !== "#cockfight") return;
         if (video.currentTime > cockfightMaxTime + 0.2) {
-          try {
-            video.currentTime = cockfightMaxTime;
-          } catch {}
+          try { video.currentTime = cockfightMaxTime; } catch {}
         }
       });
       video.addEventListener("pause", () => {
@@ -147,6 +169,28 @@
       video.muted = true;
       video.play().catch(() => {});
     }
+  }
+
+  function showCockfightVideoOverlay(type) {
+    let overlay = document.getElementById("cf-video-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "cf-video-overlay";
+      overlay.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.72);z-index:10;border-radius:12px;gap:8px;";
+      const wrap = document.querySelector(".cockfight-stream__box");
+      if (wrap) wrap.style.position = "relative", wrap.appendChild(overlay);
+    }
+    if (type === "login") {
+      overlay.innerHTML = `<svg width="36" height="36" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.7 0 4-1.3 4-4S14.7 4 12 4 8 5.3 8 8s1.3 4 4 4zm0 2c-4 0-6 2-6 3v1h12v-1c0-1-2-3-6-3z" fill="#fff"/></svg><span style="color:#fff;font-size:13px;font-weight:600;text-align:center;padding:0 16px;">Login to watch the live match</span><button onclick="location.hash='login'" style="background:#e53935;color:#fff;border:none;padding:8px 22px;border-radius:20px;font-size:13px;font-weight:700;cursor:pointer;">Login</button>`;
+    } else {
+      overlay.innerHTML = `<svg width="36" height="36" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" fill="#aaa"/></svg><span style="color:#bbb;font-size:13px;font-weight:600;text-align:center;padding:0 16px;">No live video available right now</span>`;
+    }
+    overlay.hidden = false;
+  }
+
+  function hideCockfightVideoOverlay() {
+    const overlay = document.getElementById("cf-video-overlay");
+    if (overlay) overlay.hidden = true;
   }
   function goTab(name) {
     const key = NAV_HASHES.includes(name) ? name : "home";
@@ -192,7 +236,7 @@
         showProfileView("transactions");
         loadTransactions("deposits");
       } else {
-        showProfileView("main");
+      showProfileView("main");
       }
     }
     if (panelKey === "wallet" && K) {
@@ -304,6 +348,27 @@
     live.addEventListener("change", sync);
     sync();
   }
+
+  async function setupHomeLiveStream() {
+    const vIn = document.getElementById("live-video");
+    const vFs = document.getElementById("live-video-fs");
+    if (!vIn) return;
+    const res = await K.fetchMeronWalaLatestVideo();
+    const lv = res?.latest_round_video;
+    if (!lv || lv.requires_authentication || !lv.url) return; // keep static fallback src
+    [vIn, vFs].forEach((v) => {
+      if (v && v.getAttribute("data-home-src") !== lv.url) {
+        v.replaceChildren();
+        v.src = lv.url;
+        v.setAttribute("data-home-src", lv.url);
+        v.load();
+      }
+    });
+    const on = document.getElementById("live-on")?.checked;
+    if (on) vIn.play().catch(() => {});
+  }
+
+  setupHomeLiveStream();
 
   function closeLiveVideoFullscreen() {
     const fsRoot = document.getElementById("live-fullscreen");
