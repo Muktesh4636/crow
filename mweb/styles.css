@@ -859,15 +859,13 @@ a.brand--home:focus-visible {
 }
 .game-row {
   display: flex;
-  gap: 6px;
-  justify-content: center;
+  gap: 10px;
 }
 .game-tile {
-  flex: 0 0 calc(25% - 6px);
-  max-width: 72px;
+  flex: 1 1 0;
   min-width: 0;
   aspect-ratio: 1 / 1;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   background: #fff;
   text-decoration: none;
