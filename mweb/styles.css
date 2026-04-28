@@ -885,13 +885,13 @@ a.brand--home:focus-visible {
 
 /* Cock fight + switch */
 .cock-live {
-  padding: 16px 0 0;
+  padding: 0 0 0;
 }
 .cock-live__row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 16px 4px;
+  padding: 6px 16px 12px;
 }
 .cock-live__title {
   font-size: 17px;
