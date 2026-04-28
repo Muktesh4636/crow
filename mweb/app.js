@@ -257,6 +257,15 @@
     document.getElementById("main-scroll")?.scrollTo(0, 0);
     document.getElementById("gundu-scroll")?.scrollTo(0, 0);
 
+    const v = document.getElementById("live-video");
+    const liveChk = document.getElementById("live-on");
+    if (v) {
+      if (key === "home" && liveChk?.checked) {
+        v.play().catch(() => {});
+      } else {
+        v.pause();
+      }
+    }
     const vCf = document.getElementById("cockfight-video");
     if (vCf) {
       if (key === "cockfight") {
@@ -327,6 +336,14 @@
       const on = live.checked;
       offMsg.hidden = on;
       liveCardWrap.hidden = !on;
+      if (!on) closeLiveVideoFullscreen();
+      if (liveVideo) {
+        if (on) {
+          liveVideo.play().catch(() => {});
+        } else {
+          liveVideo.pause();
+        }
+      }
     };
     live.addEventListener("change", sync);
     sync();

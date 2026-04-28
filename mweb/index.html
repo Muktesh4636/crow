@@ -339,13 +339,26 @@
             </div>
             <div class="live-off-msg" id="live-off" hidden>Live is off. Turn on LIVE above to see the match card.</div>
             <div class="video-card" id="live-card-wrap">
-              <a href="#cockfight" class="video-card__banner-link" aria-label="Open cock fight live">
-                <img src="assets/cockfight_banner.png" alt="Cock Fight Live" class="video-card__banner-img" />
+              <div class="video-card__box">
+                <video
+                  id="live-video"
+                  class="video-card__media"
+                  playsinline
+                  muted
+                  loop
+                  preload="auto"
+                  poster="assets/cockfight_banner.png"
+                  disablePictureInPicture
+                  tabindex="-1"
+                >
+                  <source src="assets/cock_fight.mp4" type="video/mp4" />
+                </video>
                 <div class="live-stream-badge" aria-hidden="true">
                   <span class="live-stream-badge__dot"></span>
                   <span class="live-stream-badge__text">LIVE</span>
                 </div>
-              </a>
+                <a href="#cockfight" class="video-card__hit" id="live-card-hit" aria-label="Open cock fight live"></a>
+              </div>
             </div>
           </section>
 
@@ -1112,6 +1125,6 @@
     </div>
   </div>
   <script src="api.js?v=23" defer></script>
-  <script src="app.js?v=32" defer></script>
+  <script src="app.js?v=33" defer></script>
 </body>
 </html>
