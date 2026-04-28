@@ -115,47 +115,62 @@
     const info = await K.fetchMeronWalaInfo();
     const lv = info?.latest_round_video;
 
-    // --- Determine video URL ---
-    let src = null;
-    if (lv) {
-      if (lv.requires_authentication && !lv.url) {
-        showCockfightVideoOverlay("login");
-        return;
-      }
-      src = lv.url || null;
+    // --- Auth check ---
+    if (!lv) {
+      showCockfightVideoOverlay("unavailable");
+      return;
     }
-
-    if (!src) {
+    if (lv.requires_authentication && !lv.url) {
+      showCockfightVideoOverlay("login");
+      return;
+    }
+    if (!lv.url) {
       showCockfightVideoOverlay("unavailable");
       return;
     }
 
     hideCockfightVideoOverlay();
 
-    // --- Countdown: if start is in the future, show timer first ---
-    if (lv.start) {
-      const startMs = new Date(lv.start).getTime();
-      const nowMs = Date.now();
-      if (startMs > nowMs) {
-        startCockfightCountdown(startMs, () => {
-          // Countdown finished — load and play
-          loadAndPlayCockfightVideo(video, src);
-        });
-        return;
-      }
-    }
+    const src = lv.url;
+    const startMs = lv.start ? new Date(lv.start).getTime() : null;
+    const nowMs = Date.now();
 
-    // Start time already passed or no start time — play directly
-    hideCockfightCountdown();
-    loadAndPlayCockfightVideo(video, src);
+    if (startMs && startMs > nowMs) {
+      // Match hasn't started yet — show countdown, don't load video
+      startCockfightCountdown(startMs, () => {
+        hideCockfightCountdown();
+        loadAndPlayCockfightVideo(video, src, 0);
+      });
+    } else {
+      // Match already started (or no scheduled time) — seek to simulated-live position
+      hideCockfightCountdown();
+      const seekTo = startMs ? Math.floor((nowMs - startMs) / 1000) : 0;
+      loadAndPlayCockfightVideo(video, src, seekTo);
+    }
   }
 
-  function loadAndPlayCockfightVideo(video, src) {
+  function loadAndPlayCockfightVideo(video, src, seekSeconds) {
+    video.loop = true;
+    video.muted = true;
+    video.poster = "assets/cockfight_banner.png";
+
     if (video.getAttribute("data-cf-src") !== src) {
-      video.removeAttribute("data-cf-wired");
       video.replaceChildren();
       video.src = src;
       video.setAttribute("data-cf-src", src);
+      video.load();
+    }
+
+    // Seek to live position once metadata is ready
+    if (seekSeconds > 0) {
+      const onMeta = () => {
+        video.removeEventListener("loadedmetadata", onMeta);
+        if (video.duration && seekSeconds < video.duration) {
+          video.currentTime = seekSeconds % video.duration;
+        }
+        video.play().catch(() => {});
+      };
+      video.addEventListener("loadedmetadata", onMeta);
     }
 
     if (!cockfightLiveBound) {
@@ -182,8 +197,8 @@
       });
       video.addEventListener("contextmenu", (e) => e.preventDefault());
     }
-    if (location.hash === "#cockfight") {
-      video.muted = true;
+
+    if (seekSeconds === 0 && location.hash === "#cockfight") {
       video.play().catch(() => {});
     }
   }

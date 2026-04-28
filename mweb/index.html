@@ -8,8 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=49" />
-</head>
+  <link rel="stylesheet" href="styles.css?v=49" /></head>
 <body>
   <div class="app-frame">
     <div class="app">
@@ -556,16 +555,11 @@
                   class="cockfight-stream__video"
                   playsinline
                   muted
-                  loop
-                  autoplay
-                  preload="auto"
-                  poster="assets/cockfight_banner.png"
+                  preload="none"
                   disablePictureInPicture
                   tabindex="-1"
                   data-cockfight-live="1"
-                >
-                  <source src="assets/cockfight_live_stream.mp4" type="video/mp4" />
-                </video>
+                ></video>
                 <div class="live-stream-badge live-stream-badge--cockfight" aria-hidden="true">
                   <span class="live-stream-badge__dot"></span>
                   <span class="live-stream-badge__text">LIVE</span>
@@ -1140,6 +1134,6 @@
     </div>
   </div>
   <script src="api.js?v=23" defer></script>
-  <script src="app.js?v=34" defer></script>
+  <script src="app.js?v=35" defer></script>
 </body>
 </html>
