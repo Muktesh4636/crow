@@ -387,9 +387,6 @@
     const canvas = document.getElementById("cf-confetti");
     if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
   }
-  let cfResultPollInterval = null;
-  let cfWinnerDismissTimeout = null;
-
   function pollForCockfightUrl(video, seekSeconds) {
     // Show a "waiting for stream" state on the countdown overlay
     const overlay = document.getElementById("cf-countdown");
