@@ -860,12 +860,14 @@ a.brand--home:focus-visible {
 .game-row {
   display: flex;
   gap: 6px;
+  justify-content: center;
 }
 .game-tile {
-  flex: 1 1 0;
+  flex: 0 0 calc(25% - 6px);
+  max-width: 72px;
   min-width: 0;
   aspect-ratio: 1 / 1;
-  border-radius: 12px;
+  border-radius: 10px;
   overflow: hidden;
   background: #fff;
   text-decoration: none;
