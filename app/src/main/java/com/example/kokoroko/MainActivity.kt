@@ -157,6 +157,25 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 
 /** Cock fight live stream (HLS). Same host as [API_BASE_URL]. */
 private val COCKFIGHT_LIVE_HLS_URL = apiUrl("/hls/live/stream/index.m3u8")
+private val GAME_MERON_WALA_INFO_URL = apiUrl("/api/game/meron-wala/info/")
+
+data class CockfightRoundVideo(
+    val roundId: Int,
+    val start: String?,   // ISO-8601 datetime or null
+    val url: String?,
+    val requiresAuthentication: Boolean
+)
+data class CockfightLastResult(
+    val session: Int,
+    val winner: String?,  // "MERON", "WALA", "DRAW" etc.
+    val settledAt: String?
+)
+data class CockfightInfoResponse(
+    val session: Int?,
+    val open: Boolean,
+    val latestRoundVideo: CockfightRoundVideo?,
+    val lastResult: CockfightLastResult?
+)
 
 /** Live cricket feed — new structured endpoint with scores & odds. */
 private val CRICKET_ODDS_API_URL = apiUrl("/api/cricket/live-events/")
@@ -2569,6 +2588,32 @@ private fun UpdateAvailableDialog(
 }
 
 @Composable
+private fun AppUpdateDialog(info: GameVersionResponse, onDownload: () -> Unit, onLater: () -> Unit) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onLater) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color.White,
+            modifier = Modifier.fillMaxWidth().padding(8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Update Available", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("Version ${info.versionName} is available. Update for the latest features.",
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontSize = 14.sp, color = Color.Gray)
+                Button(onClick = onDownload, modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)) {
+                    Text("Download Update", fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = onLater) { Text("Later", color = Color.Gray) }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
     // null = still checking
     var maintenanceOn by remember { mutableStateOf<Boolean?>(null) }
@@ -3896,6 +3941,47 @@ private data class MeronWalaBetRecord(
     val createdAt: String
 )
 
+private suspend fun fetchMeronWalaInfo(): CockfightInfoResponse? =
+    withContext(Dispatchers.IO) {
+        try {
+            val token = AuthTokenStore.accessToken
+            val req = okhttp3.Request.Builder()
+                .url(GAME_MERON_WALA_INFO_URL)
+                .apply { if (token != null) addHeader("Authorization", "Bearer $token") }
+                .addHeader("Accept", "application/json")
+                .get().build()
+            val resp = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .build().newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext null
+            val j = org.json.JSONObject(body)
+            val lvJ = j.optJSONObject("latest_round_video")
+            val lv = lvJ?.let {
+                CockfightRoundVideo(
+                    roundId = it.optInt("round_id", 0),
+                    start = it.optString("start").takeIf { s -> s.isNotEmpty() && s != "null" },
+                    url = it.optString("url").takeIf { s -> s.isNotEmpty() && s != "null" },
+                    requiresAuthentication = it.optBoolean("requires_authentication", false)
+                )
+            }
+            val lrJ = j.optJSONObject("last_result")
+            val lr = lrJ?.let {
+                CockfightLastResult(
+                    session = it.optInt("session", 0),
+                    winner = it.optString("winner").takeIf { s -> s.isNotEmpty() && s != "null" },
+                    settledAt = it.optString("settled_at").takeIf { s -> s.isNotEmpty() && s != "null" }
+                )
+            }
+            CockfightInfoResponse(
+                session = j.optInt("session").takeIf { j.has("session") && !j.isNull("session") },
+                open = j.optBoolean("open", false),
+                latestRoundVideo = lv,
+                lastResult = lr
+            )
+        } catch (e: Exception) { null }
+    }
+
 private suspend fun fetchMeronWalaBetHistory(): Pair<List<MeronWalaBetRecord>, String?> =
     withContext(Dispatchers.IO) {
         val token = AuthTokenStore.accessToken
@@ -4586,6 +4672,114 @@ private fun CockfightFirstDepositMarqueeBanner(modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun CockfightCountdownOverlay(startMs: Long, onDone: () -> Unit) {
+    var remaining by remember { mutableStateOf(maxOf(0L, (startMs - System.currentTimeMillis()) / 1000L)) }
+    LaunchedEffect(startMs) {
+        while (remaining > 0) {
+            kotlinx.coroutines.delay(1000)
+            remaining = maxOf(0L, (startMs - System.currentTimeMillis()) / 1000L)
+        }
+        onDone()
+    }
+    val h = remaining / 3600
+    val m = (remaining % 3600) / 60
+    val s = remaining % 60
+    val timeText = if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    Box(
+        Modifier.fillMaxSize().background(Color(0xCC000000)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("🐓", fontSize = 36.sp)
+                Text("VS", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp, letterSpacing = 2.sp)
+                Text("🐓", fontSize = 36.sp)
+            }
+            Text("Next match starts in", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+            Text(timeText, color = Color.White, fontWeight = FontWeight.Black, fontSize = 48.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                style = androidx.compose.ui.text.TextStyle(
+                    shadow = androidx.compose.ui.graphics.Shadow(
+                        color = Color(0xFFE53935), offset = androidx.compose.ui.geometry.Offset(0f, 0f), blurRadius = 24f
+                    )
+                )
+            )
+            Text("Get ready to place your bets!", color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun CockfightWaitingForStream() {
+    val dots = listOf("●○○", "○●○", "○○●")
+    var idx by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(400); idx = (idx + 1) % 3 } }
+    Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("🐓", fontSize = 36.sp)
+            Text(dots[idx], color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Text("Match is starting...", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text("Waiting for live stream", color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun CockfightWinnerOverlay(winner: String, userBetStatus: String?, userPayout: String?, onDismissRequest: () -> Unit) {
+    val winnerLabel = when (winner.uppercase()) {
+        "MERON", "RED" -> "🐓 Meron Wins!"
+        "WALA", "BLUE" -> "🐓 Wala Wins!"
+        "DRAW"         -> "🤝 It's a Draw!"
+        else            -> "$winner Wins!"
+    }
+    var secs by remember { mutableStateOf(300) }
+    LaunchedEffect(Unit) {
+        while (secs > 0) { kotlinx.coroutines.delay(1000); secs-- }
+        onDismissRequest()
+    }
+    val m = secs / 60; val s = secs % 60
+    Box(
+        Modifier.fillMaxSize().background(Color(0xDD000000)).clickable {},
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Text("🏆", fontSize = 52.sp)
+            Text("Match Result", color = Color.White.copy(alpha = 0.65f), fontSize = 12.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+            Text(winnerLabel, color = Color(0xFFFFD700), fontWeight = FontWeight.Black, fontSize = 28.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                style = androidx.compose.ui.text.TextStyle(
+                    shadow = androidx.compose.ui.graphics.Shadow(
+                        color = Color(0xFFFFD700), offset = androidx.compose.ui.geometry.Offset(0f, 0f), blurRadius = 20f
+                    )
+                )
+            )
+            when {
+                userBetStatus == "WON" -> Box(
+                    Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF43A047)).padding(horizontal = 16.dp, vertical = 6.dp)
+                ) { Text("🎉 You Won ${userPayout?.let { "₹$it" } ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                userBetStatus == "LOST" -> Box(
+                    Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFFE53935)).padding(horizontal = 16.dp, vertical = 6.dp)
+                ) { Text("😔 Better luck next time", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            }
+            Text("Congratulations to all winners!", color = Color.White.copy(alpha = 0.8f),
+                fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(8.dp).clip(RoundedCornerShape(4.dp)).background(Color(0xFFE53935)))
+                Text("%d:%02d".format(m, s), color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
 fun CockFightLiveScreen(
     onBack: () -> Unit,
     onWallet: () -> Unit,
@@ -4606,6 +4800,16 @@ fun CockFightLiveScreen(
     val cockfightBetScope = rememberCoroutineScope()
     val cockfightCtx = LocalContext.current
 
+    // ── Live stream state ────────────────────────────────────
+    // Phase: "loading" | "countdown" | "polling" | "playing" | "winner"
+    var streamPhase by remember { mutableStateOf("loading") }
+    var countdownStartMs by remember { mutableStateOf(0L) }
+    var liveVideoUrl by remember { mutableStateOf<String?>(null) }
+    var liveSeekSeconds by remember { mutableStateOf(0) }
+    var winnerLabel by remember { mutableStateOf("") }
+    var userBetStatus by remember { mutableStateOf<String?>(null) }
+    var userBetPayout by remember { mutableStateOf<String?>(null) }
+
     // Fullscreen: inner handler exits landscape only. Portrait: first back stays on cock fight (same idea as Gundu Ata).
     BackHandler(enabled = !isVideoFullscreen) { onBack() }
 
@@ -4614,6 +4818,79 @@ fun CockFightLiveScreen(
     LaunchedEffect(Unit) {
         val (w, _) = fetchWalletFromApi()
         cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
+    }
+
+    // ── Initial API fetch ────────────────────────────────────
+    LaunchedEffect(Unit) {
+        val info = fetchMeronWalaInfo()
+        if (info == null) { streamPhase = "polling"; return@LaunchedEffect }
+        // Check if match just ended (winner screen)
+        if (!info.open && info.lastResult?.winner != null) {
+            winnerLabel = info.lastResult.winner
+            userBetStatus = null; userBetPayout = null
+            try {
+                val (bets, _) = fetchMeronWalaBetHistory()
+                val last = bets.firstOrNull()
+                userBetStatus = last?.status
+                userBetPayout = last?.payoutAmount?.toString()
+            } catch (_: Exception) {}
+            streamPhase = "winner"; return@LaunchedEffect
+        }
+        val lv = info.latestRoundVideo
+        val startMs = lv?.start?.let {
+            try { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() } catch (_: Exception) { null }
+        }
+        val nowMs = System.currentTimeMillis()
+        when {
+            startMs != null && startMs > nowMs -> {
+                countdownStartMs = startMs
+                streamPhase = "countdown"
+            }
+            lv?.requiresAuthentication == true && lv.url == null -> streamPhase = "login"
+            lv?.url != null -> {
+                liveVideoUrl = lv.url
+                liveSeekSeconds = startMs?.let { maxOf(0, ((nowMs - it) / 1000).toInt()) } ?: 0
+                streamPhase = "playing"
+            }
+            else -> { streamPhase = "polling" }
+        }
+    }
+
+    // ── Poll every second for URL after countdown or when waiting ──
+    LaunchedEffect(streamPhase) {
+        if (streamPhase != "polling") return@LaunchedEffect
+        while (streamPhase == "polling") {
+            kotlinx.coroutines.delay(1000)
+            val info = fetchMeronWalaInfo() ?: continue
+            val lv = info.latestRoundVideo
+            when {
+                lv?.url != null -> {
+                    liveVideoUrl = lv.url
+                    liveSeekSeconds = 0
+                    streamPhase = "playing"
+                }
+                lv?.requiresAuthentication == true -> streamPhase = "login"
+            }
+        }
+    }
+
+    // ── Poll every 3 seconds during playback for match result ──
+    LaunchedEffect(streamPhase) {
+        if (streamPhase != "playing") return@LaunchedEffect
+        while (streamPhase == "playing") {
+            kotlinx.coroutines.delay(3000)
+            val info = fetchMeronWalaInfo() ?: continue
+            if (!info.open && info.lastResult?.winner != null) {
+                winnerLabel = info.lastResult.winner
+                try {
+                    val (bets, _) = fetchMeronWalaBetHistory()
+                    val last = bets.firstOrNull()
+                    userBetStatus = last?.status
+                    userBetPayout = last?.payoutAmount?.toString()
+                } catch (_: Exception) {}
+                streamPhase = "winner"
+            }
+        }
     }
     Box(Modifier.fillMaxSize().background(CockDarkBg)) {
         Column(Modifier.fillMaxSize()) {
@@ -4655,26 +4932,67 @@ fun CockFightLiveScreen(
                 // Stable key: fullscreen hides sibling items; without this the stream slot is recreated,
                 // onDispose forces portrait and drops fullscreen — user stays in portrait.
                 item(key = "cockfight_hls_stream") {
-                CockFightHlsStream(
-                    modifier = Modifier
+                Box(
+                    Modifier
                         .fillMaxWidth()
                         .height(248.dp)
                         .padding(horizontal = 16.dp)
-                        .clip(RoundedCornerShape(10.dp)),
-                    onSurfaceClick = null,
-                    usePlaybackControls = true,
-                        useHomeLocalVideo = false,
-                        useLiveLocalVideo = true,
-                        disallowPlaybackSeeking = true,
-                        odds = cockfightOdds,
-                        walletBalance = cockfightWalletText,
-                        onWalletBalanceClick = onWallet,
-                        onWalletBalanceAfterBet = { bal ->
-                            cockfightWalletText = formatRupeeBalanceForDisplay(bal)
-                        },
-                        onFullscreenChanged = { isVideoFullscreen = it },
-                        startFullscreen = false
-                    )
+                        .clip(RoundedCornerShape(10.dp))
+                ) {
+                    when (streamPhase) {
+                        "countdown" -> CockfightCountdownOverlay(
+                            startMs = countdownStartMs,
+                            onDone = { streamPhase = "polling" }
+                        )
+                        "polling" -> CockfightWaitingForStream()
+                        "loading" -> Box(Modifier.fillMaxSize().background(Color(0xFF1A1A1A)),
+                            contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = OrangePrimary)
+                        }
+                        "login" -> Box(Modifier.fillMaxSize().background(Color(0xFF1A1A1A)),
+                            contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("🔐", fontSize = 36.sp)
+                                Text("Login to watch the live match",
+                                    color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            }
+                        }
+                        else -> { // "playing" or "winner" — show the player
+                            val url = liveVideoUrl
+                            if (url != null) {
+                                CockFightHlsStream(
+                                    modifier = Modifier.fillMaxSize(),
+                                    onSurfaceClick = null,
+                                    usePlaybackControls = true,
+                                    useHomeLocalVideo = false,
+                                    useLiveLocalVideo = false,
+                                    liveStreamUrl = url,
+                                    liveSeekSeconds = liveSeekSeconds,
+                                    disallowPlaybackSeeking = true,
+                                    odds = cockfightOdds,
+                                    walletBalance = cockfightWalletText,
+                                    onWalletBalanceClick = onWallet,
+                                    onWalletBalanceAfterBet = { bal ->
+                                        cockfightWalletText = formatRupeeBalanceForDisplay(bal)
+                                    },
+                                    onFullscreenChanged = { isVideoFullscreen = it },
+                                    startFullscreen = false
+                                )
+                            }
+                            // Winner overlay on top of video
+                            if (streamPhase == "winner") {
+                                CockfightWinnerOverlay(
+                                    winner = winnerLabel,
+                                    userBetStatus = userBetStatus,
+                                    userPayout = userBetPayout,
+                                    onDismissRequest = { streamPhase = "loading" }
+                                )
+                            }
+                        }
+                    }
+                }
                 }
                 if (!isVideoFullscreen) {
             item {
@@ -9684,6 +10002,10 @@ private fun CockFightHlsStream(
     useHomeLocalVideo: Boolean = false,
     /** Cock Fight screen: play packaged `cockfight_live.mp4` instead of HLS stream. */
     useLiveLocalVideo: Boolean = false,
+    /** Dynamic URL from API (takes priority over HLS fallback when set). */
+    liveStreamUrl: String? = null,
+    /** Seconds to seek into the video for simulated-live joining. */
+    liveSeekSeconds: Int = 0,
     /** When true (cock fight screen), user cannot skip forward / scrub on the timeline. */
     disallowPlaybackSeeking: Boolean = false,
     odds: List<CockfightOdd> = emptyList(),
@@ -9732,7 +10054,7 @@ private fun CockFightHlsStream(
         }
     }
 
-    val exoPlayer = remember(useHomeLocalVideo, useLiveLocalVideo) {
+    val exoPlayer = remember(useHomeLocalVideo, useLiveLocalVideo, liveStreamUrl) {
         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
             when {
                 useHomeLocalVideo -> {
@@ -9747,6 +10069,11 @@ private fun CockFightHlsStream(
                     repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_ALL
                     volume = 1f
                 }
+                liveStreamUrl != null -> {
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(liveStreamUrl)))
+                    repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
+                    volume = 1f
+                }
                 else -> {
                 setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(COCKFIGHT_LIVE_HLS_URL)))
                 repeatMode = androidx.media3.exoplayer.ExoPlayer.REPEAT_MODE_OFF
@@ -9755,6 +10082,19 @@ private fun CockFightHlsStream(
             }
             prepare()
             playWhenReady = true
+        }
+    }
+    // Seek to simulated-live position once ready
+    LaunchedEffect(exoPlayer, liveSeekSeconds) {
+        if (liveSeekSeconds > 0) {
+            var waited = 0
+            while (exoPlayer.duration <= 0L && waited < 10000) {
+                kotlinx.coroutines.delay(200); waited += 200
+            }
+            if (exoPlayer.duration > 0) {
+                val seekMs = minOf(liveSeekSeconds * 1000L, exoPlayer.duration - 1000L)
+                if (seekMs > 0) exoPlayer.seekTo(seekMs)
+            }
         }
     }
     DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
