@@ -257,15 +257,6 @@
     document.getElementById("main-scroll")?.scrollTo(0, 0);
     document.getElementById("gundu-scroll")?.scrollTo(0, 0);
 
-    const v = document.getElementById("live-video");
-    const liveChk = document.getElementById("live-on");
-    if (v) {
-      if (key === "home" && liveChk?.checked) {
-        v.play().catch(() => {});
-      } else {
-        v.pause();
-      }
-    }
     const vCf = document.getElementById("cockfight-video");
     if (vCf) {
       if (key === "cockfight") {
@@ -336,55 +327,16 @@
       const on = live.checked;
       offMsg.hidden = on;
       liveCardWrap.hidden = !on;
-      if (!on) closeLiveVideoFullscreen();
-      if (liveVideo) {
-        if (on) {
-          liveVideo.play().catch(() => {});
-        } else {
-          liveVideo.pause();
-        }
-      }
     };
     live.addEventListener("change", sync);
     sync();
   }
 
-  async function setupHomeLiveStream() {
-    const vIn = document.getElementById("live-video");
-    const vFs = document.getElementById("live-video-fs");
-    if (!vIn) return;
-    const res = await K.fetchMeronWalaLatestVideo();
-    const lv = res?.latest_round_video;
-    if (!lv || lv.requires_authentication || !lv.url) return; // keep static fallback src
-    [vIn, vFs].forEach((v) => {
-      if (v && v.getAttribute("data-home-src") !== lv.url) {
-        v.replaceChildren();
-        v.src = lv.url;
-        v.setAttribute("data-home-src", lv.url);
-        v.load();
-      }
-    });
-    const on = document.getElementById("live-on")?.checked;
-    if (on) vIn.play().catch(() => {});
-  }
-
-  setupHomeLiveStream();
-
   function closeLiveVideoFullscreen() {
     const fsRoot = document.getElementById("live-fullscreen");
-    const vIn = document.getElementById("live-video");
-    const vFs = document.getElementById("live-video-fs");
     if (!fsRoot || fsRoot.hidden) return;
     fsRoot.hidden = true;
-    if (vIn && vFs) {
-      vIn.currentTime = vFs.currentTime || 0;
-      vFs.pause();
-    }
     document.body.style.overflow = "";
-    const on = document.getElementById("live-on")?.checked;
-    if (on && document.documentElement.dataset.tab === "home" && vIn) {
-      vIn.play().catch(() => {});
-    }
   }
 
   function openLiveVideoFullscreen() {
