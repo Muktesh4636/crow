@@ -863,7 +863,7 @@ a.brand--home:focus-visible {
   padding: 0 4px;
 }
 .game-tile {
-  flex: 0 0 22%;
+  flex: 0 0 17%;
   min-width: 0;
   aspect-ratio: 1 / 1;
   border-radius: 12px;
