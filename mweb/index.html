@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=48" />
+  <link rel="stylesheet" href="styles.css?v=49" />
 </head>
 <body>
   <div class="app-frame">
@@ -573,6 +573,21 @@
                 <button type="button" class="cockfight-stream__max" id="cockfight-video-max" aria-label="Maximize video" title="Full screen">
                   <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
                 </button>
+
+                <!-- Match countdown overlay -->
+                <div class="cf-countdown" id="cf-countdown" hidden>
+                  <div class="cf-countdown__bg"></div>
+                  <div class="cf-countdown__content">
+                    <div class="cf-countdown__vs">
+                      <span class="cf-countdown__rooster cf-countdown__rooster--l">🐓</span>
+                      <span class="cf-countdown__vs-text">VS</span>
+                      <span class="cf-countdown__rooster cf-countdown__rooster--r">🐓</span>
+                    </div>
+                    <p class="cf-countdown__label">Next match starts in</p>
+                    <div class="cf-countdown__timer" id="cf-countdown-timer">00:00</div>
+                    <p class="cf-countdown__sub">Get ready to place your bets!</p>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1125,6 +1140,6 @@
     </div>
   </div>
   <script src="api.js?v=23" defer></script>
-  <script src="app.js?v=33" defer></script>
+  <script src="app.js?v=34" defer></script>
 </body>
 </html>

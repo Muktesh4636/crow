@@ -10,6 +10,7 @@
   let cockfightLiveBound = false;
   let cockfightMaxTime = 0;
   let cockfightDialogOpen = false;
+  let cfCountdownInterval = null;
   let lastBankWithdraw = { upi: "", bankAcc: "", bankIfsc: "" };
 
   function balanceNumOnly(s) {
@@ -118,7 +119,6 @@
     let src = null;
     if (lv) {
       if (lv.requires_authentication && !lv.url) {
-        // user not logged in — show overlay
         showCockfightVideoOverlay("login");
         return;
       }
@@ -132,6 +132,25 @@
 
     hideCockfightVideoOverlay();
 
+    // --- Countdown: if start is in the future, show timer first ---
+    if (lv.start) {
+      const startMs = new Date(lv.start).getTime();
+      const nowMs = Date.now();
+      if (startMs > nowMs) {
+        startCockfightCountdown(startMs, () => {
+          // Countdown finished — load and play
+          loadAndPlayCockfightVideo(video, src);
+        });
+        return;
+      }
+    }
+
+    // Start time already passed or no start time — play directly
+    hideCockfightCountdown();
+    loadAndPlayCockfightVideo(video, src);
+  }
+
+  function loadAndPlayCockfightVideo(video, src) {
     if (video.getAttribute("data-cf-src") !== src) {
       video.removeAttribute("data-cf-wired");
       video.replaceChildren();
@@ -143,9 +162,7 @@
       cockfightLiveBound = true;
       video.addEventListener("timeupdate", () => {
         if (location.hash !== "#cockfight") return;
-        if (video.currentTime + 0.3 < cockfightMaxTime) {
-          cockfightMaxTime = 0;
-        }
+        if (video.currentTime + 0.3 < cockfightMaxTime) cockfightMaxTime = 0;
         cockfightMaxTime = Math.max(cockfightMaxTime, video.currentTime);
       });
       video.addEventListener("seeking", () => {
@@ -169,6 +186,41 @@
       video.muted = true;
       video.play().catch(() => {});
     }
+  }
+
+  function startCockfightCountdown(startMs, onDone) {
+    const overlay = document.getElementById("cf-countdown");
+    const timerEl = document.getElementById("cf-countdown-timer");
+    if (!overlay || !timerEl) { onDone(); return; }
+
+    if (cfCountdownInterval) clearInterval(cfCountdownInterval);
+    overlay.hidden = false;
+
+    const tick = () => {
+      const remaining = Math.max(0, Math.floor((startMs - Date.now()) / 1000));
+      const h = Math.floor(remaining / 3600);
+      const m = Math.floor((remaining % 3600) / 60);
+      const s = remaining % 60;
+      if (h > 0) {
+        timerEl.textContent = `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+      } else {
+        timerEl.textContent = `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+      }
+      if (remaining <= 0) {
+        clearInterval(cfCountdownInterval);
+        cfCountdownInterval = null;
+        overlay.hidden = true;
+        onDone();
+      }
+    };
+    tick();
+    cfCountdownInterval = setInterval(tick, 1000);
+  }
+
+  function hideCockfightCountdown() {
+    if (cfCountdownInterval) { clearInterval(cfCountdownInterval); cfCountdownInterval = null; }
+    const overlay = document.getElementById("cf-countdown");
+    if (overlay) overlay.hidden = true;
   }
 
   function showCockfightVideoOverlay(type) {

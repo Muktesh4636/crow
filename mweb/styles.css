@@ -3266,6 +3266,94 @@ a.cockfight-ttl:focus-visible {
 .cockfight-stream__max:active {
   background: rgba(0, 0, 0, 0.72);
 }
+
+/* ── Match countdown overlay ───────────────────────────────── */
+.cf-countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cf-countdown__bg {
+  position: absolute;
+  inset: 0;
+  background: url('assets/cockfight_banner.png') center/cover no-repeat;
+  filter: brightness(0.35) blur(2px);
+  transform: scale(1.05);
+}
+.cf-countdown__content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px;
+  text-align: center;
+}
+.cf-countdown__vs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.cf-countdown__rooster {
+  font-size: 36px;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.8));
+  animation: cf-rooster-bob 1.4s ease-in-out infinite alternate;
+}
+.cf-countdown__rooster--r {
+  transform: scaleX(-1);
+  display: inline-block;
+  animation-delay: 0.7s;
+}
+@keyframes cf-rooster-bob {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-6px); }
+}
+.cf-countdown__rooster--r {
+  transform: scaleX(-1);
+  animation: cf-rooster-bob-r 1.4s ease-in-out 0.7s infinite alternate;
+}
+@keyframes cf-rooster-bob-r {
+  from { transform: scaleX(-1) translateY(0); }
+  to   { transform: scaleX(-1) translateY(-6px); }
+}
+.cf-countdown__vs-text {
+  font-size: 20px;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+  letter-spacing: 2px;
+}
+.cf-countdown__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.85);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 0;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+}
+.cf-countdown__timer {
+  font-size: 52px;
+  font-weight: 900;
+  color: #fff;
+  letter-spacing: 2px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 16px rgba(229,57,53,0.8), 0 0 40px rgba(229,57,53,0.4);
+  line-height: 1;
+}
+.cf-countdown__sub {
+  font-size: 12px;
+  color: rgba(255,255,255,0.65);
+  margin: 0;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+}
 .cockfight-fsdialog {
   position: fixed;
   inset: 0;
