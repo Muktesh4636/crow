@@ -128,6 +128,11 @@
     }
 
     // ── Step 2: Start time already past or no start time — check URL now ──
+    // If session just settled show winner screen first
+    if (!info.open && info.last_result?.winner) {
+      showWinnerOverlay(info.last_result.winner);
+      return;
+    }
     if (!lv) {
       showCockfightVideoOverlay("unavailable");
       return;
@@ -209,6 +214,8 @@
     if (seekSeconds === 0 && location.hash === "#cockfight") {
       video.play().catch(() => {});
     }
+    // Start polling for match result while video plays
+    startResultPoll();
   }
 
   function startCockfightCountdown(startMs, onDone) {
@@ -262,6 +269,126 @@
   }
 
   let cfPollInterval = null;
+  let cfResultPollInterval = null;
+  let cfWinnerDismissTimeout = null;
+
+  function startResultPoll() {
+    if (cfResultPollInterval) return; // already polling
+    cfResultPollInterval = setInterval(async () => {
+      if (location.hash !== "#cockfight") {
+        clearInterval(cfResultPollInterval); cfResultPollInterval = null; return;
+      }
+      const info = await K.fetchMeronWalaInfo();
+      if (!info) return;
+      // Session just settled — last_result will have the winner
+      if (!info.open && info.last_result?.winner) {
+        clearInterval(cfResultPollInterval); cfResultPollInterval = null;
+        showWinnerOverlay(info.last_result.winner);
+      }
+    }, 3000); // poll every 3 seconds during playback
+  }
+
+  function stopResultPoll() {
+    if (cfResultPollInterval) { clearInterval(cfResultPollInterval); cfResultPollInterval = null; }
+  }
+
+  function showWinnerOverlay(winner) {
+    const overlay = document.getElementById("cf-winner");
+    const nameEl  = document.getElementById("cf-winner-name");
+    const badgeEl = document.getElementById("cf-winner-badge");
+    const countEl = document.getElementById("cf-winner-countdown");
+    if (!overlay || !nameEl) return;
+
+    // Pause the video
+    document.getElementById("cockfight-video")?.pause();
+
+    // Set winner name
+    const labelMap = { MERON: "Meron Wins! 🐓", BLUE: "Wala Wins! 🐓", WALA: "Wala Wins! 🐓", DRAW: "It's a Draw! 🤝", RED: "Meron Wins! 🐓" };
+    nameEl.textContent = labelMap[winner?.toUpperCase()] || (winner + " Wins!");
+
+    // Check user's own last bet result
+    badgeEl.textContent = "";
+    badgeEl.className = "cf-winner__badge";
+    K.fetchMeronWalaBetsMine && K.fetchMeronWalaBetsMine().then(res => {
+      const bets = res?.data || [];
+      const last = bets[0];
+      if (last) {
+        if (last.status === "WON") {
+          badgeEl.textContent = "🎉 You Won ₹" + (last.payout_amount || "");
+          badgeEl.classList.add("cf-winner__badge--won");
+        } else if (last.status === "LOST") {
+          badgeEl.textContent = "😔 Better luck next time";
+          badgeEl.classList.add("cf-winner__badge--lost");
+        }
+      }
+    }).catch(() => {});
+
+    overlay.hidden = false;
+    startConfetti();
+
+    // Countdown 5 minutes then auto-hide
+    let secs = 5 * 60;
+    if (countEl) countEl.textContent = "5:00";
+    const ticker = setInterval(() => {
+      secs--;
+      if (countEl) {
+        const m = Math.floor(secs / 60), s = secs % 60;
+        countEl.textContent = `${m}:${String(s).padStart(2,"0")}`;
+      }
+      if (secs <= 0) { clearInterval(ticker); hideWinnerOverlay(); }
+    }, 1000);
+    cfWinnerDismissTimeout = ticker;
+  }
+
+  function hideWinnerOverlay() {
+    if (cfWinnerDismissTimeout) { clearInterval(cfWinnerDismissTimeout); cfWinnerDismissTimeout = null; }
+    stopConfetti();
+    const overlay = document.getElementById("cf-winner");
+    if (overlay) overlay.hidden = true;
+  }
+
+  // ── Simple canvas confetti ────────────────────────────────
+  let confettiAnimId = null;
+  function startConfetti() {
+    const canvas = document.getElementById("cf-confetti");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    const pieces = Array.from({length: 60}, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height - canvas.height,
+      w: 6 + Math.random() * 8,
+      h: 4 + Math.random() * 6,
+      color: ["#FFD700","#FF6B6B","#4FC3F7","#81C784","#CE93D8","#FF8A65"][Math.floor(Math.random()*6)],
+      speed: 1.5 + Math.random() * 2.5,
+      angle: Math.random() * Math.PI * 2,
+      spin: (Math.random() - 0.5) * 0.15,
+    }));
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      pieces.forEach(p => {
+        p.y += p.speed; p.angle += p.spin;
+        if (p.y > canvas.height) { p.y = -p.h; p.x = Math.random() * canvas.width; }
+        ctx.save();
+        ctx.translate(p.x + p.w/2, p.y + p.h/2);
+        ctx.rotate(p.angle);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w/2, -p.h/2, p.w, p.h);
+        ctx.restore();
+      });
+      confettiAnimId = requestAnimationFrame(draw);
+    }
+    if (confettiAnimId) cancelAnimationFrame(confettiAnimId);
+    draw();
+  }
+  function stopConfetti() {
+    if (confettiAnimId) { cancelAnimationFrame(confettiAnimId); confettiAnimId = null; }
+    const canvas = document.getElementById("cf-confetti");
+    if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  }
+  let cfResultPollInterval = null;
+  let cfWinnerDismissTimeout = null;
 
   function pollForCockfightUrl(video, seekSeconds) {
     // Show a "waiting for stream" state on the countdown overlay
@@ -401,6 +528,8 @@
         vCf.removeAttribute("data-cf-src");
         hideCockfightCountdown();
         if (cfPollInterval) { clearInterval(cfPollInterval); cfPollInterval = null; }
+        stopResultPoll();
+        hideWinnerOverlay();
       }
     }
     const vGu = document.getElementById("gundu-video");

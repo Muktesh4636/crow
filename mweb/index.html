@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=49" /></head>
+  <link rel="stylesheet" href="styles.css?v=50" /></head>
 <body>
   <div class="app-frame">
     <div class="app">
@@ -582,6 +582,23 @@
                     <p class="cf-countdown__sub">Get ready to place your bets!</p>
                   </div>
                 </div>
+
+                <!-- Winner congratulations overlay -->
+                <div class="cf-winner" id="cf-winner" hidden>
+                  <div class="cf-winner__bg"></div>
+                  <canvas class="cf-winner__confetti" id="cf-confetti"></canvas>
+                  <div class="cf-winner__content">
+                    <div class="cf-winner__trophy">🏆</div>
+                    <p class="cf-winner__title">Match Result</p>
+                    <div class="cf-winner__name" id="cf-winner-name">Meron Wins!</div>
+                    <div class="cf-winner__badge" id="cf-winner-badge"></div>
+                    <p class="cf-winner__sub">Congratulations to all winners!</p>
+                    <div class="cf-winner__timer-row">
+                      <span class="cf-winner__dot"></span>
+                      <span id="cf-winner-countdown">5:00</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1134,6 +1151,6 @@
     </div>
   </div>
   <script src="api.js?v=23" defer></script>
-  <script src="app.js?v=39" defer></script>
+  <script src="app.js?v=40" defer></script>
 </body>
 </html>
