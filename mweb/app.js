@@ -111,11 +111,31 @@
     const video = document.getElementById("cockfight-video");
     if (!video) return;
 
-    // Fetch info (includes session status + latest video URL)
     const info = await K.fetchMeronWalaInfo();
     const lv = info?.latest_round_video;
 
-    // --- Auth check ---
+    const startMs = lv?.start ? new Date(lv.start).getTime() : null;
+    const nowMs = Date.now();
+
+    // ── Step 1: If start time is in the future, ALWAYS show countdown first ──
+    if (startMs && startMs > nowMs) {
+      hideCockfightVideoOverlay();
+      startCockfightCountdown(startMs, async () => {
+        hideCockfightCountdown();
+        // Re-fetch to get fresh signed URL when match starts
+        const fresh = await K.fetchMeronWalaInfo();
+        const flv = fresh?.latest_round_video;
+        if (!flv || !flv.url) {
+          if (flv?.requires_authentication) showCockfightVideoOverlay("login");
+          else showCockfightVideoOverlay("unavailable");
+          return;
+        }
+        loadAndPlayCockfightVideo(video, flv.url, 0);
+      });
+      return;
+    }
+
+    // ── Step 2: Start time already past or no start time — check URL now ──
     if (!lv) {
       showCockfightVideoOverlay("unavailable");
       return;
@@ -131,30 +151,17 @@
 
     hideCockfightVideoOverlay();
 
-    const src = lv.url;
-    const startMs = lv.start ? new Date(lv.start).getTime() : null;
-    const nowMs = Date.now();
-
     if (startMs) {
-      if (startMs > nowMs) {
-        // Future start — show full countdown, play only when it hits 0
-        startCockfightCountdown(startMs, () => {
-          hideCockfightCountdown();
-          loadAndPlayCockfightVideo(video, src, 0);
-        });
-      } else {
-        // Start time has passed — match is live. Show countdown as 00:00
-        // briefly, then play from the correct simulated-live position
-        const elapsed = Math.floor((nowMs - startMs) / 1000);
-        startCockfightCountdown(startMs, () => {
-          hideCockfightCountdown();
-          loadAndPlayCockfightVideo(video, src, elapsed);
-        });
-      }
+      // Start is in the past — match is live, show "LIVE" screen briefly then seek
+      const elapsed = Math.floor((nowMs - startMs) / 1000);
+      startCockfightCountdown(startMs, () => {
+        hideCockfightCountdown();
+        loadAndPlayCockfightVideo(video, lv.url, elapsed);
+      });
     } else {
-      // No scheduled time set — play from beginning immediately
+      // No scheduled time — play from beginning
       hideCockfightCountdown();
-      loadAndPlayCockfightVideo(video, src, 0);
+      loadAndPlayCockfightVideo(video, lv.url, 0);
     }
   }
 
