@@ -885,7 +885,7 @@ a.brand--home:focus-visible {
 
 /* Cock fight + switch */
 .cock-live {
-  padding: 0 0 0;
+  padding: 16px 0 0;
 }
 .cock-live__row {
   display: flex;
