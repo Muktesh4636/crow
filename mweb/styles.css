@@ -859,10 +859,11 @@ a.brand--home:focus-visible {
 }
 .game-row {
   display: flex;
-  gap: 10px;
+  justify-content: space-between;
+  padding: 0 4px;
 }
 .game-tile {
-  flex: 1 1 0;
+  flex: 0 0 22%;
   min-width: 0;
   aspect-ratio: 1 / 1;
   border-radius: 12px;
