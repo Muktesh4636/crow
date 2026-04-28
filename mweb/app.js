@@ -135,17 +135,26 @@
     const startMs = lv.start ? new Date(lv.start).getTime() : null;
     const nowMs = Date.now();
 
-    if (startMs && startMs > nowMs) {
-      // Match hasn't started yet — show countdown, don't load video
-      startCockfightCountdown(startMs, () => {
-        hideCockfightCountdown();
-        loadAndPlayCockfightVideo(video, src, 0);
-      });
+    if (startMs) {
+      if (startMs > nowMs) {
+        // Future start — show full countdown, play only when it hits 0
+        startCockfightCountdown(startMs, () => {
+          hideCockfightCountdown();
+          loadAndPlayCockfightVideo(video, src, 0);
+        });
+      } else {
+        // Start time has passed — match is live. Show countdown as 00:00
+        // briefly, then play from the correct simulated-live position
+        const elapsed = Math.floor((nowMs - startMs) / 1000);
+        startCockfightCountdown(startMs, () => {
+          hideCockfightCountdown();
+          loadAndPlayCockfightVideo(video, src, elapsed);
+        });
+      }
     } else {
-      // Match already started (or no scheduled time) — seek to simulated-live position
+      // No scheduled time set — play from beginning immediately
       hideCockfightCountdown();
-      const seekTo = startMs ? Math.floor((nowMs - startMs) / 1000) : 0;
-      loadAndPlayCockfightVideo(video, src, seekTo);
+      loadAndPlayCockfightVideo(video, src, 0);
     }
   }
 
@@ -206,10 +215,25 @@
   function startCockfightCountdown(startMs, onDone) {
     const overlay = document.getElementById("cf-countdown");
     const timerEl = document.getElementById("cf-countdown-timer");
+    const subEl = document.querySelector(".cf-countdown__sub");
+    const labelEl = document.querySelector(".cf-countdown__label");
     if (!overlay || !timerEl) { onDone(); return; }
 
     if (cfCountdownInterval) clearInterval(cfCountdownInterval);
     overlay.hidden = false;
+
+    const alreadyStarted = startMs <= Date.now();
+    if (alreadyStarted) {
+      timerEl.textContent = "00:00";
+      if (labelEl) labelEl.textContent = "Match is live now!";
+      if (subEl) subEl.textContent = "Loading match...";
+      // Show briefly then start
+      setTimeout(() => { overlay.hidden = true; onDone(); }, 1200);
+      return;
+    }
+
+    if (labelEl) labelEl.textContent = "Next match starts in";
+    if (subEl) subEl.textContent = "Get ready to place your bets!";
 
     const tick = () => {
       const remaining = Math.max(0, Math.floor((startMs - Date.now()) / 1000));
