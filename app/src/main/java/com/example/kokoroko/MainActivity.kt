@@ -12,6 +12,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.webkit.CookieManager
 import android.webkit.WebView
@@ -163,19 +165,69 @@ data class CockfightRoundVideo(
     val roundId: Int,
     val start: String?,   // ISO-8601 datetime or null
     val url: String?,
-    val requiresAuthentication: Boolean
+    val requiresAuthentication: Boolean,
+    /** ISO time from API; used with fetched-at millis for skew (matches mweb `server_time`). */
+    val serverTime: String?,
+    /** Optional per-video labels (e.g. Red / Black); merged with [CockfightInfoResponse.sideLabelsRoot]. */
+    val sideLabels: CockfightSideLabels?,
 )
+
+/** API `side_labels` payload: display names for COCK1 / COCK2. */
+data class CockfightSideLabels(
+    val cock1: String,
+    val cock2: String,
+)
+
+/** Prefer video-round labels over root-level `side_labels`; default Cock 1 / Cock 2. */
+private fun CockfightInfoResponse.effectiveSideLabels(): CockfightSideLabels =
+    CockfightSideLabels(
+        cock1 = latestRoundVideo?.sideLabels?.cock1 ?: sideLabelsRoot?.cock1 ?: "Cock 1",
+        cock2 = latestRoundVideo?.sideLabels?.cock2 ?: sideLabelsRoot?.cock2 ?: "Cock 2"
+    )
+
+private fun JSONObject.optNonBlank(key: String): String? =
+    optString(key, "").trim().takeIf { it.isNotEmpty() && it != "null" }
+
+/** Parses top-level `"side_labels": { "COCK1": "...", "COCK2": "..." }` if present. */
+private fun JSONObject.parseSideLabelsField(): CockfightSideLabels? {
+    if (!has("side_labels") || isNull("side_labels")) return null
+    val sl = optJSONObject("side_labels") ?: return null
+    val c1 = sl.optNonBlank("COCK1")
+    val c2 = sl.optNonBlank("COCK2")
+    if (c1 == null && c2 == null) return null
+    return CockfightSideLabels(c1 ?: "Cock 1", c2 ?: "Cock 2")
+}
+
 data class CockfightLastResult(
     val session: Int,
-    val winner: String?,  // "MERON", "WALA", "DRAW" etc.
+    val winner: String?,   // Canonical: COCK1, COCK2, DRAW (+ legacy strings normalized at parse)
     val settledAt: String?
 )
 data class CockfightInfoResponse(
     val session: Int?,
+    val roundId: Int?,
     val open: Boolean,
+    /** Top-level labels when present; may be superseded per-round by `latest_round_video.side_labels`. */
+    val sideLabelsRoot: CockfightSideLabels?,
     val latestRoundVideo: CockfightRoundVideo?,
-    val lastResult: CockfightLastResult?
+    val lastResult: CockfightLastResult?,
+    /** `server_now - device_now` at fetch, same as mweb `clockSkew` for countdown. */
+    val clockSkewMillis: Long,
 )
+
+/** Parse API ISO-8601 timestamp to epoch ms (used for server clock skew). */
+private fun cockfightParseIsoToEpochMillis(iso: String?): Long? {
+    val s = iso?.trim()?.takeIf { it.isNotEmpty() && it != "null" } ?: return null
+    return try {
+        java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli()
+    } catch (_: Exception) {
+        try {
+            java.time.Instant.parse(s).toEpochMilli()
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
 
 /** Live cricket feed — new structured endpoint with scores & odds. */
 private val CRICKET_ODDS_API_URL = apiUrl("/api/cricket/live-events/")
@@ -263,6 +315,7 @@ private val AUTH_WALLET_URL = apiUrl("/api/auth/wallet/")
 private val AUTH_PAYMENT_DETAILS_URL = apiUrl("/api/auth/payment-details/")
 private val AUTH_PAYMENT_METHODS_URL = apiUrl("/api/auth/payment-methods/")
 private val AUTH_PROFILE_URL = apiUrl("/api/auth/profile/")
+private val AUTH_REFERRAL_DATA_URL = apiUrl("/api/auth/referral-data/")
 private val AUTH_LOGOUT_URL = apiUrl("/api/auth/logout/")
 private val AUTH_BANK_DETAILS_URL = apiUrl("/api/auth/bank-details/")
 private val AUTH_WITHDRAW_INITIATE_URL = apiUrl("/api/auth/withdraws/initiate/")
@@ -271,7 +324,7 @@ private val AUTH_WITHDRAWS_MINE_URL = apiUrl("/api/auth/withdraws/mine/")
 private val SUPPORT_CONTACTS_API_URL = apiUrl("/api/support/contacts/")
 private val MAINTENANCE_STATUS_URL = apiUrl("/api/maintenance/status/")
 private val GAME_VERSION_URL = apiUrl("/api/game/version/")
-/** POST body: `{ "side": "MERON"|"WALA"|"DRAW", "stake": int }` */
+/** POST body `{ "side": "COCK1"|"COCK2"|"DRAW", ... }`; MERON/WALA accepted as legacy aliases server-side. */
 private val GAME_MERON_WALA_BET_URL = apiUrl("/api/game/meron-wala/bet/")
 /** GET last 50 bets for the signed-in user, newest first */
 private val GAME_MERON_WALA_BETS_MINE_URL = apiUrl("/api/game/meron-wala/bets/mine/")
@@ -1198,6 +1251,228 @@ private fun localDemoProfile(): ProfileDetailsApi {
         isStaff = false
     )
 }
+
+private data class ReferralFriendRow(
+    val username: String,
+    val hasDeposit: Boolean,
+    val dateJoined: String? = null
+)
+
+private data class ReferralCommissionSlab(
+    val minReferrals: Int,
+    val maxReferrals: Int?,
+    val commissionPercent: Double
+)
+
+private data class ReferralDailyCommissionRow(
+    val commissionDate: String,
+    val refereeUsername: String,
+    val lossAmountDisplay: String,
+    val commissionPercent: Double,
+    val commissionAmountDisplay: String
+)
+
+private data class ReferralDataApi(
+    val referralCode: String,
+    val commissionRatePercent: Double,
+    val totalReferrals: Int,
+    val activeReferrals: Int,
+    val totalEarnings: String,
+    val commissionEarnedToday: String,
+    val instantReferralBonusPerReferee: Int,
+    val totalCommissionEarnings: String,
+    val totalDailyCommissionEarnings: String,
+    val commissionTodayIst: String?,
+    val totalLegacyReferralBonusEarnings: String,
+    val commissionSlabs: List<ReferralCommissionSlab>,
+    val recentDailyCommissions: List<ReferralDailyCommissionRow>,
+    val referrals: List<ReferralFriendRow> = emptyList()
+)
+
+private fun JSONObject.optAnyAmountString(key: String): String {
+    if (!has(key) || isNull(key)) return ""
+    return when (val v = opt(key)) {
+        is Number -> {
+            val d = v.toDouble()
+            if (kotlin.math.abs(d - kotlin.math.floor(d)) < 1e-9) kotlin.math.round(d).toLong().toString()
+            else v.toString().trim()
+        }
+
+        else -> optString(key, "").trim()
+    }
+}
+
+private fun spacedReferralCode(raw: String): String =
+    raw.trim().toCharArray().joinToString(" ")
+
+private fun formatReferralCommissionPctForUi(rate: Double): String {
+    if (rate.isNaN()) return "—"
+    if (kotlin.math.abs(rate - kotlin.math.round(rate)) < 1e-6) {
+        return kotlin.math.round(rate).toInt().toString()
+    }
+    val t = kotlin.math.round(rate * 10) / 10.0
+    return t.toString().removeSuffix(".0")
+}
+
+private fun rupeeLabelForReferral(amount: String): String {
+    val t = amount.trim()
+    return if (t.isEmpty()) "₹0" else if (t.startsWith("₹")) t else "₹$t"
+}
+
+private fun localDemoReferral(): ReferralDataApi {
+    val u = AuthTokenStore.localDemoUsername?.trim().orEmpty().ifBlank { "demo" }
+    return ReferralDataApi(
+        referralCode = u,
+        commissionRatePercent = 2.0,
+        totalReferrals = 0,
+        activeReferrals = 0,
+        totalEarnings = "0",
+        commissionEarnedToday = "0",
+        instantReferralBonusPerReferee = 0,
+        totalCommissionEarnings = "0",
+        totalDailyCommissionEarnings = "0",
+        commissionTodayIst = null,
+        totalLegacyReferralBonusEarnings = "0",
+        commissionSlabs = emptyList(),
+        recentDailyCommissions = emptyList(),
+        referrals = emptyList()
+    )
+}
+
+private fun parseReferralFromJson(root: JSONObject): ReferralDataApi {
+    val data = root.optJSONObject("data") ?: root
+    val code = data.pickString("referral_code")?.trim().orEmpty()
+    val rate =
+        when {
+            data.has("commission_rate_percent") && !data.isNull("commission_rate_percent") ->
+                data.optDouble("commission_rate_percent", 0.0)
+            else -> {
+                val slabsInit = data.optJSONArray("commission_slabs")
+                if (slabsInit != null && slabsInit.length() > 0) {
+                    slabsInit.optJSONObject(0)?.optDouble("commission_percent", 0.0) ?: 0.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    val totalEarn =
+        data.pickString("total_earnings")?.takeIf { it.isNotBlank() }
+            ?: data.pickString("total_commission_earnings")?.takeIf { it.isNotBlank() }
+            ?: "0"
+    val todayEarn = data.pickString("commission_earned_today")?.takeIf { it.isNotBlank() } ?: "0"
+    val instantBonus = data.optIntValue("instant_referral_bonus_per_referee", 0)
+    val totalCommEarn = data.pickString("total_commission_earnings")?.takeIf { it.isNotBlank() } ?: "0"
+    val totalDailyEarn = data.pickString("total_daily_commission_earnings")?.takeIf { it.isNotBlank() } ?: "0"
+    val legacyEarn = data.pickString("total_legacy_referral_bonus_earnings")?.takeIf { it.isNotBlank() } ?: "0"
+    val ist = data.pickString("commission_today_ist")?.takeIf { it.isNotBlank() }
+
+    val slabs = mutableListOf<ReferralCommissionSlab>()
+    val slabArr = data.optJSONArray("commission_slabs")
+    if (slabArr != null) {
+        for (i in 0 until slabArr.length()) {
+            val s = slabArr.optJSONObject(i) ?: continue
+            val minR = s.optIntValue("min_referrals", 1)
+            val maxR: Int? =
+                when {
+                    !s.has("max_referrals") || s.isNull("max_referrals") -> null
+                    else -> s.optInt("max_referrals", -999).takeUnless { it < 0 }
+                }
+            val cp =
+                if (s.has("commission_percent") && !s.isNull("commission_percent")) {
+                    s.optDouble("commission_percent", 0.0)
+                } else {
+                    0.0
+                }
+            slabs.add(ReferralCommissionSlab(minReferrals = minR, maxReferrals = maxR, commissionPercent = cp))
+        }
+    }
+
+    val dailies = mutableListOf<ReferralDailyCommissionRow>()
+    val dcArr = data.optJSONArray("recent_daily_commissions")
+    if (dcArr != null) {
+        for (i in 0 until dcArr.length()) {
+            val o = dcArr.optJSONObject(i) ?: continue
+            val pct =
+                if (o.has("commission_percent") && !o.isNull("commission_percent")) {
+                    o.optDouble("commission_percent", 0.0)
+                } else {
+                    0.0
+                }
+            dailies.add(
+                ReferralDailyCommissionRow(
+                    commissionDate = o.pickString("commission_date")?.trim().orEmpty(),
+                    refereeUsername = o.pickString("referee_username")?.trim().orEmpty(),
+                    lossAmountDisplay = o.optAnyAmountString("loss_amount"),
+                    commissionPercent = pct,
+                    commissionAmountDisplay = o.optAnyAmountString("commission_amount")
+                )
+            )
+        }
+    }
+
+    val refs = mutableListOf<ReferralFriendRow>()
+    val arr = data.optJSONArray("referrals")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val un = o.pickString("username")?.trim().orEmpty()
+            if (un.isEmpty()) continue
+            val dj = o.pickString("date_joined", "joined_at")?.takeIf { it.isNotBlank() }
+            refs.add(
+                ReferralFriendRow(username = un, hasDeposit = o.optBoolean("has_deposit", false), dateJoined = dj)
+            )
+        }
+    }
+    return ReferralDataApi(
+        referralCode = code,
+        commissionRatePercent = rate,
+        totalReferrals = data.optIntValue("total_referrals", 0),
+        activeReferrals = data.optIntValue("active_referrals", 0),
+        totalEarnings = totalEarn,
+        commissionEarnedToday = todayEarn,
+        instantReferralBonusPerReferee = instantBonus,
+        totalCommissionEarnings = totalCommEarn,
+        totalDailyCommissionEarnings = totalDailyEarn,
+        commissionTodayIst = ist,
+        totalLegacyReferralBonusEarnings = legacyEarn,
+        commissionSlabs = slabs,
+        recentDailyCommissions = dailies,
+        referrals = refs
+    )
+}
+
+private suspend fun fetchAuthReferralData(): Pair<ReferralDataApi?, String?> =
+    withContext(Dispatchers.IO) {
+        val token =
+            AuthTokenStore.accessToken
+                ?: return@withContext Pair(null, "Sign in to view referral information.")
+        if (AuthTokenStore.isLocalDemoSession()) {
+            return@withContext Pair(localDemoReferral(), null)
+        }
+        try {
+            val req =
+                Request.Builder()
+                    .url(AUTH_REFERRAL_DATA_URL)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 -> {
+                        notifySessionExpired()
+                        Pair(null, "Session expired. Please sign in again.")
+                    }
+                    !resp.isSuccessful || text.isBlank() ->
+                        Pair(null, "Could not load referral data (${resp.code}).")
+                    else -> Pair(parseReferralFromJson(JSONObject(text)), null)
+                }
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "Network error")
+        }
+    }
 
 private suspend fun fetchAuthProfile(): Pair<ProfileDetailsApi?, String?> =
     withContext(Dispatchers.IO) {
@@ -3919,15 +4194,37 @@ private val CockfightPortraitPlainRed = Color(0xFFB74A4A)
 private val CockfightPortraitPlainGreen = Color(0xFF3F8F5C)
 private val CockfightPortraitPlainBlue = Color(0xFF3D73B5)
 
-private data class CockfightOdd(val label: String, val odd: String, val color: Color)
-private data class CockfightBetSelection(val label: String, val odd: String, val color: Color)
+private data class CockfightOdd(
+    val label: String,
+    val odd: String,
+    val color: Color,
+    /** COCK1 / COCK2 / DRAW — stable for POST body even when label is dynamic (Red, Black, …). */
+    val canonicalSide: String,
+)
+private data class CockfightBetSelection(
+    val label: String,
+    val odd: String,
+    val color: Color,
+    val canonicalSide: String,
+)
 
-private fun cockfightLabelToSideApi(label: String): String? =
-    when (label.trim().uppercase(Locale.US)) {
-        "MERON", "M" -> "MERON"
-        "WALA", "W" -> "WALA"
-        "DRAW", "D" -> "DRAW"
-        else -> null
+/** Canonical sides: COCK1, COCK2, DRAW (+ COMPLETED for overlays). Normalize API/legacy strings once. */
+private fun canonicalCockfightSide(raw: String?): String =
+    when (raw?.trim()?.uppercase(Locale.US) ?: "") {
+        "", "NULL", "UNDEFINED" -> ""
+        "MERON", "RED", "M", "COCK1", "SIDE1" -> "COCK1"
+        "WALA", "BLUE", "W", "COCK2", "SIDE2" -> "COCK2"
+        "DRAW", "D", "TIE" -> "DRAW"
+        "COMPLETED" -> "COMPLETED"
+        else -> raw?.trim()?.uppercase(Locale.US).orEmpty()
+    }
+
+private fun uiDisplaySideFor(canonicalUpper: String): String =
+    when (canonicalUpper) {
+        "COCK1" -> "Meron"
+        "COCK2" -> "Wala"
+        "DRAW" -> "Draw"
+        else -> canonicalUpper
     }
 
 private data class MeronWalaBetSuccess(
@@ -3945,11 +4242,13 @@ private data class MeronWalaBetRecord(
     val id: Int,
     val session: Int,
     val side: String,
+    /** Display string from API when present (`side_label`). */
+    val sideLabel: String?,
     val stake: Int,
     val odds: String,
     val potentialPayout: Int,
     val status: String,       // PENDING / WON / LOST / VOID
-    val payoutAmount: Int,
+    val payoutAmount: Int?,
     val createdAt: String
 )
 
@@ -3966,30 +4265,44 @@ private suspend fun fetchMeronWalaInfo(): CockfightInfoResponse? =
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .build().newCall(req).execute()
+            val fetchedAtMillis = System.currentTimeMillis()
             val body = resp.body?.string() ?: return@withContext null
             val j = org.json.JSONObject(body)
             val lvJ = j.optJSONObject("latest_round_video")
-            val lv = lvJ?.let {
+            val lv = lvJ?.let { o ->
+                val urlStr = sequenceOf(o.optString("hls_url"), o.optString("url"))
+                    .firstOrNull { it.isNotEmpty() && it != "null" }
                 CockfightRoundVideo(
-                    roundId = it.optInt("round_id", 0),
-                    start = it.optString("start").takeIf { s -> s.isNotEmpty() && s != "null" },
-                    url = it.optString("url").takeIf { s -> s.isNotEmpty() && s != "null" },
-                    requiresAuthentication = it.optBoolean("requires_authentication", false)
+                    roundId = o.optInt("round_id", 0),
+                    start = o.optString("start").takeIf { s -> s.isNotEmpty() && s != "null" },
+                    url = urlStr,
+                    requiresAuthentication = o.optBoolean("requires_authentication", false),
+                    serverTime = o.optString("server_time").takeIf { s -> s.isNotEmpty() && s != "null" },
+                    sideLabels = o.parseSideLabelsField()
                 )
             }
             val lrJ = j.optJSONObject("last_result")
             val lr = lrJ?.let {
                 CockfightLastResult(
                     session = it.optInt("session", 0),
-                    winner = it.optString("winner").takeIf { s -> s.isNotEmpty() && s != "null" },
+                    winner = it.optString("winner").takeIf { s -> s.isNotEmpty() && s != "null" }
+                        ?.let { w -> canonicalCockfightSide(w).takeIf { out -> out.isNotEmpty() } },
                     settledAt = it.optString("settled_at").takeIf { s -> s.isNotEmpty() && s != "null" }
                 )
             }
+            // Same skew as mweb: clockSkew = serverMs - fetchedAt when server_time set, else 0
+            val serverEpochForSkew = cockfightParseIsoToEpochMillis(
+                lv?.serverTime ?: j.optString("server_time").takeIf { s -> s.isNotEmpty() && s != "null" }
+            )
+            val clockSkewMillis = (serverEpochForSkew ?: fetchedAtMillis) - fetchedAtMillis
             CockfightInfoResponse(
                 session = j.optInt("session").takeIf { j.has("session") && !j.isNull("session") },
+                roundId = j.optInt("round_id").takeIf { j.has("round_id") && !j.isNull("round_id") },
                 open = j.optBoolean("open", false),
+                sideLabelsRoot = j.parseSideLabelsField(),
                 latestRoundVideo = lv,
-                lastResult = lr
+                lastResult = lr,
+                clockSkewMillis = clockSkewMillis
             )
         } catch (e: Exception) { null }
     }
@@ -4019,12 +4332,16 @@ private suspend fun fetchMeronWalaBetHistory(): Pair<List<MeronWalaBetRecord>, S
                             MeronWalaBetRecord(
                                 id = j.optIntValue("id", -1),
                                 session = j.optIntValue("session", -1),
-                                side = j.optString("side", "").trim(),
+                                side = canonicalCockfightSide(j.optString("side", "").trim()),
+                                sideLabel = j.optNonBlank("side_label"),
                                 stake = j.optIntValue("stake", 0),
                                 odds = j.optString("odds", "").trim(),
                                 potentialPayout = j.optIntValue("potential_payout", 0),
                                 status = j.optString("status", "").trim().uppercase(Locale.US),
-                                payoutAmount = j.optIntValue("payout_amount", 0),
+                                payoutAmount =
+                                    if (!j.has("payout_amount") || j.isNull("payout_amount"))
+                                        null
+                                    else j.optIntValue("payout_amount", 0),
                                 createdAt = j.optString("created_at", "").trim()
                             )
                         }
@@ -4180,8 +4497,17 @@ private suspend fun postMeronWalaBet(side: String, stake: Int): Pair<MeronWalaBe
                         Pair(
                             MeronWalaBetSuccess(
                                 betId = j.optIntValue("bet_id", -1),
-                                sessionId = j.optIntValue("session_id", -1),
-                                side = j.optString("side", "").trim(),
+                                sessionId =
+                                    when {
+                                        j.has("session") && !j.isNull("session") ->
+                                            j.optIntValue("session", -1)
+
+                                        j.has("session_id") && !j.isNull("session_id") ->
+                                            j.optIntValue("session_id", -1)
+
+                                        else -> -1
+                                    },
+                                side = canonicalCockfightSide(j.optString("side", "").trim()),
                                 stake = j.optIntValue("stake", stake),
                                 odds = j.optString("odds", "").trim(),
                                 potentialPayout = j.optIntValue("potential_payout", 0),
@@ -4459,11 +4785,12 @@ private fun CockfightBetHistoryPanel(onDismiss: () -> Unit) {
 
 @Composable
 private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
-    val sideColor = when (bet.side) {
-        "MERON" -> CockMeronRed
-        "WALA"  -> CockWalaBlue
-        "DRAW"  -> CockDrawGreen
-        else    -> Color.Gray
+    val canon = canonicalCockfightSide(bet.side)
+    val sideColor = when (canon) {
+        "COCK1" -> CockMeronRed
+        "COCK2" -> CockWalaBlue
+        "DRAW" -> CockDrawGreen
+        else -> Color.Gray
     }
     val statusColor = when (bet.status) {
         "WON"  -> Color(0xFF4CAF50)
@@ -4479,7 +4806,11 @@ private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
                     ) {
             Surface(shape = RoundedCornerShape(6.dp), color = sideColor.copy(alpha = 0.15f)) {
                         Text(
-                    bet.side,
+                    (
+                        bet.sideLabel?.takeIf { it.isNotBlank() }
+                            ?: canon.takeIf { it.isNotEmpty() }?.let { uiDisplaySideFor(it) }
+                            ?: bet.side.ifBlank { "?" }
+                    ).uppercase(Locale.US),
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     color = sideColor,
                     fontWeight = FontWeight.ExtraBold,
@@ -4513,7 +4844,11 @@ private fun CockfightBetHistoryRow(bet: MeronWalaBetRecord) {
                 }
                 Spacer(Modifier.height(4.dp))
                     Text(
-                    if (bet.status == "WON") "+₹${bet.payoutAmount}" else "pot. ₹${bet.potentialPayout}",
+                    when {
+                        bet.status == "WON" && bet.payoutAmount != null -> "+₹${bet.payoutAmount}"
+                        bet.status == "WON" -> "Won — pending payout"
+                        else -> "pot. ₹${bet.potentialPayout}"
+                    },
                     color = if (bet.status == "WON") Color(0xFF4CAF50) else Color(0xFF666666),
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp
@@ -4582,7 +4917,7 @@ private fun CockfightOddsBetCard(
     }
 }
 
-/** Tall portrait card: odds on top, label on bottom (Sabong-style). */
+/** Tall portrait card: odds on top, label on bottom — sizing aligned with mweb `.cockfight-side-btn` (~150px tall, 21px/15px type). */
 @Composable
 private fun CockfightPortraitLargeBetCard(
     label: String,
@@ -4597,7 +4932,7 @@ private fun CockfightPortraitLargeBetCard(
         modifier = modifier
             .height(cardHeight)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         color = baseColor,
         border = if (selected) BorderStroke(3.dp, OrangePrimary) else null,
         shadowElevation = 0.dp
@@ -4605,20 +4940,20 @@ private fun CockfightPortraitLargeBetCard(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(vertical = 12.dp, horizontal = 8.dp),
+                .padding(vertical = 14.dp, horizontal = 8.dp),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
                 "${odd}X",
                 color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 22.sp
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 21.sp
             )
             Text(
                 label,
                 color = Color.White,
-                fontWeight = FontWeight.Medium,
+                fontWeight = FontWeight.Bold,
                 fontSize = 15.sp
             )
         }
@@ -4684,12 +5019,13 @@ private fun CockfightFirstDepositMarqueeBanner(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun CockfightCountdownOverlay(startMs: Long, onDone: () -> Unit) {
-    var remaining by remember { mutableStateOf(maxOf(0L, (startMs - System.currentTimeMillis()) / 1000L)) }
-    LaunchedEffect(startMs) {
+private fun CockfightCountdownOverlay(startMs: Long, clockSkewMillis: Long, onDone: () -> Unit) {
+    fun remainingSecs() = maxOf(0L, (startMs - System.currentTimeMillis() - clockSkewMillis) / 1000L)
+    var remaining by remember(startMs, clockSkewMillis) { mutableStateOf(remainingSecs()) }
+    LaunchedEffect(startMs, clockSkewMillis) {
         while (remaining > 0) {
             kotlinx.coroutines.delay(1000)
-            remaining = maxOf(0L, (startMs - System.currentTimeMillis()) / 1000L)
+            remaining = remainingSecs()
         }
         onDone()
     }
@@ -4698,26 +5034,65 @@ private fun CockfightCountdownOverlay(startMs: Long, onDone: () -> Unit) {
     val s = remaining % 60
     val timeText = if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
     Box(
-        Modifier.fillMaxSize().background(Color(0xCC000000)),
-        contentAlignment = Alignment.Center
+        Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(12.dp))
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Image(
+            painter = painterResource(R.drawable.cockfight_banner),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+        // Cf. mweb `.cf-countdown__bg` filter brightness(0.35) + scrim
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.62f)))
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(16.dp),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text("🐓", fontSize = 36.sp)
-                Text("VS", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp, letterSpacing = 2.sp)
-                Text("🐓", fontSize = 36.sp)
-            }
-            Text("Next match starts in", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-            Text(timeText, color = Color.White, fontWeight = FontWeight.Black, fontSize = 48.sp,
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                style = androidx.compose.ui.text.TextStyle(
-                    shadow = androidx.compose.ui.graphics.Shadow(
-                        color = Color(0xFFE53935), offset = androidx.compose.ui.geometry.Offset(0f, 0f), blurRadius = 24f
+                Text(
+                    "VS",
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 20.sp,
+                    letterSpacing = 2.sp,
+                    style = androidx.compose.ui.text.TextStyle(
+                        shadow = Shadow(Color.Black.copy(0.9f), blurRadius = 8f)
                     )
                 )
+                Text("🐓", fontSize = 36.sp, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f))
+            }
+            Text(
+                "Next match starts in",
+                color = Color.White.copy(alpha = 0.85f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp,
+                style = androidx.compose.ui.text.TextStyle(shadow = Shadow(Color.Black.copy(0.8f), blurRadius = 4f))
             )
-            Text("Get ready to place your bets!", color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
+            Text(timeText,
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontSize = 52.sp,
+                fontFamily = FontFamily.Monospace,
+                style = androidx.compose.ui.text.TextStyle(
+                    shadow = Shadow(Color(0xFFE53935), offset = Offset(0f, 2f), blurRadius = 16f),
+                    letterSpacing = 2.sp,
+                ))
+            Text(
+                "Get ready to place your bets!",
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 12.sp,
+                style = androidx.compose.ui.text.TextStyle(shadow = Shadow(Color.Black.copy(0.8f), blurRadius = 4f))
+            )
         }
     }
 }
@@ -4738,12 +5113,20 @@ private fun CockfightWaitingForStream() {
 }
 
 @Composable
-private fun CockfightWinnerOverlay(winner: String, userBetStatus: String?, userPayout: String?, onDismissRequest: () -> Unit) {
-    val winnerLabel = when (winner.uppercase()) {
-        "MERON", "RED" -> "🐓 Meron Wins!"
-        "WALA", "BLUE" -> "🐓 Wala Wins!"
-        "DRAW"         -> "🤝 It's a Draw!"
-        else            -> "$winner Wins!"
+private fun CockfightWinnerOverlay(
+    winner: String,
+    userBetStatus: String?,
+    userPayout: String?,
+    onDismissRequest: () -> Unit,
+    sideTitles: CockfightSideLabels = CockfightSideLabels("Cock 1", "Cock 2"),
+) {
+    val w = canonicalCockfightSide(winner)
+    val winnerLabel = when (w) {
+        "COCK1" -> "🐓 ${sideTitles.cock1} Wins!"
+        "COCK2" -> "🐓 ${sideTitles.cock2} Wins!"
+        "DRAW" -> "🤝 It's a Draw!"
+        "COMPLETED" -> "Match Completed 🏆"
+        else -> "${winner.ifBlank { "?" }.trim()} Wins!"
     }
     var secs by remember { mutableStateOf(60) }
     LaunchedEffect(Unit) {
@@ -4771,15 +5154,21 @@ private fun CockfightWinnerOverlay(winner: String, userBetStatus: String?, userP
                     )
                 )
             )
-            when {
-                userBetStatus == "WON" -> Box(
-                    Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF43A047)).padding(horizontal = 16.dp, vertical = 6.dp)
-                ) { Text("🎉 You Won ${userPayout?.let { "₹$it" } ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
-                userBetStatus == "LOST" -> Box(
-                    Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFFE53935)).padding(horizontal = 16.dp, vertical = 6.dp)
-                ) { Text("😔 Better luck next time", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            if (w != "COMPLETED") {
+                when {
+                    userBetStatus == "WON" -> Box(
+                        Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF43A047)).padding(horizontal = 16.dp, vertical = 6.dp)
+                    ) { Text("🎉 You Won ${userPayout?.let { "₹$it" } ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                    userBetStatus == "LOST" -> Box(
+                        Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFFE53935)).padding(horizontal = 16.dp, vertical = 6.dp)
+                    ) { Text("😔 Better luck next time", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                }
             }
-            Text("Congratulations to all winners!", color = Color.White.copy(alpha = 0.8f),
+            val subLine = if (w == "COMPLETED")
+                "Results will be announced shortly."
+            else
+                "Congratulations to all winners!"
+            Text(subLine, color = Color.White.copy(alpha = 0.8f),
                 fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             Spacer(Modifier.height(4.dp))
@@ -4798,11 +5187,16 @@ fun CockFightLiveScreen(
     onOpenProfile: () -> Unit = {}
 ) {
     var isVideoFullscreen by remember { mutableStateOf(false) }
-    val cockfightOdds = remember {
-        listOf(
-            CockfightOdd("Meron", "1.90", CockMeronRed),
-            CockfightOdd("Draw", "4.46", CockDrawGreen),
-            CockfightOdd("Wala", "1.92", CockWalaBlue)
+    var cockfightSideLabelsUi by remember {
+        mutableStateOf(CockfightSideLabels("Meron", "Wala"))
+    }
+    var cockfightOdds by remember {
+        mutableStateOf(
+            listOf(
+                CockfightOdd("Meron", "1.90", CockMeronRed, "COCK1"),
+                CockfightOdd("Draw", "4.46", CockDrawGreen, "DRAW"),
+                CockfightOdd("Wala", "1.92", CockWalaBlue, "COCK2"),
+            )
         )
     }
     var selectedCockfightOdd by remember { mutableStateOf<CockfightOdd?>(cockfightOdds.firstOrNull()) }
@@ -4816,6 +5210,8 @@ fun CockFightLiveScreen(
     // Phase: "loading" | "countdown" | "polling" | "playing" | "winner"
     var streamPhase by remember { mutableStateOf("loading") }
     var countdownStartMs by remember { mutableStateOf(0L) }
+    /** Same as mweb countdown: `Date.now() + clockSkew`. */
+    var countdownClockSkewMs by remember { mutableStateOf(0L) }
     var liveVideoUrl by remember { mutableStateOf<String?>(null) }
     var liveSeekSeconds by remember { mutableStateOf(0) }
     var winnerLabel by remember { mutableStateOf("") }
@@ -4835,6 +5231,16 @@ fun CockFightLiveScreen(
     // ── Initial API fetch ────────────────────────────────────
     LaunchedEffect(Unit) {
         val info = fetchMeronWalaInfo()
+        if (info != null) {
+            val esl = info.effectiveSideLabels()
+            cockfightSideLabelsUi = esl
+            cockfightOdds = listOf(
+                CockfightOdd(esl.cock1, "1.90", CockMeronRed, "COCK1"),
+                CockfightOdd("Draw", "4.46", CockDrawGreen, "DRAW"),
+                CockfightOdd(esl.cock2, "1.92", CockWalaBlue, "COCK2"),
+            )
+            selectedCockfightOdd = cockfightOdds.firstOrNull()
+        }
         if (info == null) { streamPhase = "polling"; return@LaunchedEffect }
         // Check if match just ended (winner screen)
         if (!info.open && info.lastResult?.winner != null) {
@@ -4849,13 +5255,13 @@ fun CockFightLiveScreen(
             streamPhase = "winner"; return@LaunchedEffect
         }
         val lv = info.latestRoundVideo
-        val startMs = lv?.start?.let {
-            try { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() } catch (_: Exception) { null }
-        }
-        val nowMs = System.currentTimeMillis()
+        val startMs = lv?.start?.let { cockfightParseIsoToEpochMillis(it) }
+        val skew = info.clockSkewMillis
+        val nowMs = System.currentTimeMillis() + skew
         when {
             startMs != null && startMs > nowMs -> {
                 countdownStartMs = startMs
+                countdownClockSkewMs = skew
                 streamPhase = "countdown"
             }
             lv?.requiresAuthentication == true && lv.url == null -> streamPhase = "login"
@@ -4966,6 +5372,7 @@ fun CockFightLiveScreen(
                     when (streamPhase) {
                         "countdown" -> CockfightCountdownOverlay(
                             startMs = countdownStartMs,
+                            clockSkewMillis = countdownClockSkewMs,
                             onDone = { streamPhase = "polling" }
                         )
                         "polling" -> CockfightWaitingForStream()
@@ -5003,7 +5410,13 @@ fun CockFightLiveScreen(
                                     },
                                     onFullscreenChanged = { isVideoFullscreen = it },
                                     startFullscreen = false,
-                                    cropVideoToFill = true
+                                    cropVideoToFill = true,
+                                    onPlaybackEnded = {
+                                        winnerLabel = "COMPLETED"
+                                        userBetStatus = null
+                                        userBetPayout = null
+                                        streamPhase = "winner"
+                                    },
                                 )
                             }
                         }
@@ -5014,20 +5427,21 @@ fun CockFightLiveScreen(
                                 winner = winnerLabel,
                                 userBetStatus = userBetStatus,
                                 userPayout = userBetPayout,
-                                onDismissRequest = { onBack() }
+                                onDismissRequest = { onBack() },
+                                sideTitles = cockfightSideLabelsUi,
                             )
                         }
                     }
                 }
                 }
                 if (!isVideoFullscreen) {
-            item {
+                item {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                                .padding(top = 12.dp, bottom = 10.dp)
-                        .height(52.dp)
+                                .padding(horizontal = 12.dp)
+                                .padding(top = 8.dp, bottom = 12.dp)
+                        .height(44.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(
                             Brush.horizontalGradient(
@@ -5041,31 +5455,29 @@ fun CockFightLiveScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "Meron  VS  Wala",
+                        "${cockfightSideLabelsUi.cock1}  VS  ${cockfightSideLabelsUi.cock2}",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
+                        fontSize = 16.sp,
+                        letterSpacing = 0.3.sp
                     )
                 }
             }
                 }
                 if (!isVideoFullscreen) {
                     item(key = "cockfight_bet_cards") {
-                        val meronWalaHeight = 180.dp
-                        val drawHeight = 135.dp // 3/4 of Meron / Wala height
+                        /** Match mweb: three equal columns ~150px tall; gap/padding similar to `.cock-cards-row`. */
+                        val cardH = 150.dp
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                                .padding(top = 22.dp, bottom = 8.dp),
+                                .padding(horizontal = 12.dp)
+                                .padding(top = 10.dp, bottom = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.Top
                         ) {
                             cockfightOdds.forEachIndexed { index, o ->
-                                val h = when (index) {
-                                    1 -> drawHeight
-                                    else -> meronWalaHeight
-                                }
+                                val h = cardH
                                 val plain = when (index) {
                                     0 -> CockfightPortraitPlainRed
                                     1 -> CockfightPortraitPlainGreen
@@ -5152,11 +5564,7 @@ fun CockFightLiveScreen(
                                         Toast.makeText(cockfightCtx, "Pick Meron, Draw, or Wala", Toast.LENGTH_SHORT).show()
                                         return@Button
                                     }
-                                    val side = cockfightLabelToSideApi(pick.label)
-                                    if (side == null) {
-                                        Toast.makeText(cockfightCtx, "Invalid side", Toast.LENGTH_SHORT).show()
-                                        return@Button
-                                    }
+                                    val side = pick.canonicalSide
                                     cockfightBetScope.launch {
                                         placingCockfightBet = true
                                         val (ok, err) = postMeronWalaBet(side, selectedChipAmount)
@@ -7143,9 +7551,36 @@ fun ProfileDetailsScreen(onBack: () -> Unit, onHome: () -> Unit) {
 @Composable
 fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
     BackHandler { onBack() }
-    val referralCodeDisplay = "A G H M U 5 4 5"
-    val referralCodeCopy = "AGHMU545"
     val clipboard = LocalClipboardManager.current
+    val ctx = LocalContext.current
+    var loading by remember { mutableStateOf(true) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var data by remember { mutableStateOf<ReferralDataApi?>(null) }
+    LaunchedEffect(Unit) {
+        loading = true
+        err = null
+        val (d, e) = fetchAuthReferralData()
+        data = d
+        err = e
+        loading = false
+    }
+    val ref = data
+    val errText = err
+    val pctLabel = ref?.let { formatReferralCommissionPctForUi(it.commissionRatePercent) } ?: "—"
+    val headline =
+        when {
+            ref != null && pctLabel != "—" -> "Receive $pctLabel% Commission."
+            ref != null -> "Receive —% Commission."
+            errText != null && !loading -> "Referral"
+            else -> "Receive —% Commission."
+        }
+    val codeDisplay =
+        when {
+            ref != null && ref.referralCode.isNotBlank() -> spacedReferralCode(ref.referralCode)
+            loading && ref == null -> "…"
+            else -> "—"
+        }
+    val codeCopy = ref?.referralCode?.trim().orEmpty()
 
     Column(
         modifier = Modifier
@@ -7187,23 +7622,32 @@ fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
                 modifier = Modifier.padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Default.Security,
-                        contentDescription = null,
-                        tint = Color.Black,
-                        modifier = Modifier.size(44.dp)
+                if (loading && ref == null) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(40.dp),
+                        color = OrangePrimary,
+                        strokeWidth = 3.dp
                     )
-                    Icon(
-                        Icons.Default.KeyboardArrowDown,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    Spacer(Modifier.height(16.dp))
+                } else {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Security,
+                            contentDescription = null,
+                            tint = Color.Black,
+                            modifier = Modifier.size(44.dp)
+                        )
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
                 }
-                Spacer(Modifier.height(12.dp))
                 Text(
-                    "Receive 2% Commission.",
+                    headline,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
                     color = Color.Black,
@@ -7217,6 +7661,93 @@ fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
                     textAlign = TextAlign.Center,
                     lineHeight = 20.sp
                 )
+                if (errText != null && ref == null && !loading) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        errText,
+                        fontSize = 13.sp,
+                        color = Color(0xFFC62828),
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+                }
+                if (ref != null) {
+                    Spacer(Modifier.height(16.dp))
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ReferralStatCell(
+                                value = "${ref.totalReferrals}",
+                                label = "Total referrals",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ReferralStatCell(
+                                value = "${ref.activeReferrals}",
+                                label = "Active referrals",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ReferralStatCell(
+                                value = rupeeLabelForReferral(ref.totalEarnings),
+                                label = "Total earnings",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ReferralStatCell(
+                                value = rupeeLabelForReferral(ref.commissionEarnedToday),
+                                label = "Today's commission",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ReferralStatCell(
+                                value = rupeeLabelForReferral(ref.instantReferralBonusPerReferee.toString()),
+                                label = "Bonus per referee (instant)",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ReferralStatCell(
+                                value = rupeeLabelForReferral(ref.totalCommissionEarnings),
+                                label = "Total commission earnings",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ReferralStatCell(
+                                value = rupeeLabelForReferral(ref.totalDailyCommissionEarnings),
+                                label = "Total daily commission",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ReferralStatCell(
+                                value = rupeeLabelForReferral(ref.totalLegacyReferralBonusEarnings),
+                                label = "Legacy referral bonus",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        ref.commissionTodayIst?.takeIf { it.isNotBlank() }?.let { ist ->
+                            Text(
+                                "Today's commission date (IST): $ist",
+                                fontSize = 12.sp,
+                                color = Color.DarkGray,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.height(20.dp))
                 Row(
                     modifier = Modifier
@@ -7227,14 +7758,17 @@ fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = referralCodeDisplay,
+                        text = codeDisplay,
                         modifier = Modifier.weight(1f),
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
                         color = Color.Black,
                         letterSpacing = 2.sp
                     )
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(referralCodeCopy)) }) {
+                    IconButton(
+                        onClick = { if (codeCopy.isNotEmpty()) clipboard.setText(AnnotatedString(codeCopy)) },
+                        enabled = codeCopy.isNotEmpty()
+                    ) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = Color.Black)
                     }
                 }
@@ -7244,7 +7778,21 @@ fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
         Spacer(Modifier.height(16.dp))
 
         Surface(
-            onClick = { },
+            onClick = {
+                val code = ref?.referralCode?.trim().orEmpty()
+                val text =
+                    if (code.isNotEmpty()) {
+                        "Join me on Kokoroko! Code: $code"
+                    } else {
+                        "Join me on Kokoroko!"
+                    }
+                val send =
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                    }
+                ctx.startActivity(Intent.createChooser(send, "Share"))
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
@@ -7266,6 +7814,185 @@ fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
                     color = Color.Black
                 )
                 Icon(Icons.Default.Share, contentDescription = null, tint = Color.Black)
+            }
+        }
+
+        if (ref != null && ref.commissionSlabs.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color.LightGray)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Commission slabs", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.Black)
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "Min refs",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Gray,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "Max refs",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Gray,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "%",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Gray,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    ref.commissionSlabs.forEachIndexed { idx, slab ->
+                        if (idx > 0) Divider(color = Color(0xFFEEEEEE))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("${slab.minReferrals}", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            Text(
+                                slab.maxReferrals?.toString() ?: "∞",
+                                fontSize = 13.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                "${formatReferralCommissionPctForUi(slab.commissionPercent)}%",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (ref != null && ref.recentDailyCommissions.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color.LightGray)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Recent daily commissions", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.Black)
+                    Spacer(Modifier.height(10.dp))
+                    ref.recentDailyCommissions.take(50).forEachIndexed { idx, row ->
+                        if (idx > 0) Divider(color = Color(0xFFEEEEEE))
+                        Column(Modifier.padding(vertical = 8.dp)) {
+                            Text(
+                                "${row.commissionDate} · ${row.refereeUsername}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.Black
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "Loss ${rupeeLabelForReferral(row.lossAmountDisplay)}",
+                                    fontSize = 11.sp,
+                                    color = Color.DarkGray
+                                )
+                                Text(
+                                    "${formatReferralCommissionPctForUi(row.commissionPercent)}%",
+                                    fontSize = 11.sp,
+                                    color = Color.DarkGray
+                                )
+                                Text(
+                                    rupeeLabelForReferral(row.commissionAmountDisplay),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.Black
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (ref != null && ref.referrals.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Your referrals",
+                modifier = Modifier.padding(horizontal = 16.dp),
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = Color.Black
+            )
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                val rows = ref.referrals.take(50)
+                rows.forEachIndexed { index, row ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                row.username,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.Black
+                            )
+                            row.dateJoined?.takeIf { it.isNotBlank() }?.let { dj ->
+                                val short =
+                                    if (dj.contains("T")) dj.substringBefore("T") else dj.take(10).ifBlank { dj.take(16) }
+                                Text(
+                                    "Joined $short",
+                                    fontSize = 11.sp,
+                                    color = Color.Gray,
+                                    modifier = Modifier.padding(top = 3.dp)
+                                )
+                            }
+                        }
+                        if (row.hasDeposit) {
+                            Surface(
+                                color = Color(0xFFE8F5E9),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    "Deposited",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF2E7D32)
+                                )
+                            }
+                        }
+                    }
+                    if (index < rows.lastIndex) {
+                        Divider(color = Color(0xFFEEEEEE))
+                    }
+                }
             }
         }
 
@@ -7336,6 +8063,25 @@ fun ReferralScreen(onBack: () -> Unit, onHome: () -> Unit) {
         }
 
         Spacer(Modifier.height(32.dp))
+    }
+}
+
+@Composable
+private fun ReferralStatCell(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White.copy(alpha = 0.88f),
+        border = BorderStroke(1.dp, Color(0x0F000000))
+    ) {
+        Column(Modifier.padding(10.dp)) {
+            Text(value, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
+            Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF666666))
+        }
     }
 }
 
@@ -10044,7 +10790,9 @@ private fun CockFightHlsStream(
     onFullscreenChanged: ((Boolean) -> Unit)? = null,
     startFullscreen: Boolean = false,
     /** Like mweb object-fit: cover — fill the 16:9 frame without side letterboxing (cock fight live screen). */
-    cropVideoToFill: Boolean = false
+    cropVideoToFill: Boolean = false,
+    /** Matches mweb `video` `ended`: show "Match Completed" when playback finishes (VoD/HLS end). */
+    onPlaybackEnded: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
@@ -10125,7 +10873,22 @@ private fun CockFightHlsStream(
             }
         }
     }
-    DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
+    val onPlaybackEndedCb = androidx.compose.runtime.rememberUpdatedState(onPlaybackEnded)
+    DisposableEffect(exoPlayer) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState != androidx.media3.common.Player.STATE_ENDED) return
+                Handler(Looper.getMainLooper()).post {
+                    onPlaybackEndedCb.value?.invoke()
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
+        }
+    }
 
     LaunchedEffect(exoPlayer, cropVideoToFill) {
         exoPlayer.videoScalingMode = if (cropVideoToFill) {
@@ -10376,7 +11139,7 @@ private fun CockFightHlsStream(
                                 baseColor = o.color,
                                 staggerIndex = index,
                                 modifier = Modifier.weight(1f),
-                                onClick = { betSelection = CockfightBetSelection(o.label, o.odd, o.color) }
+                                onClick = { betSelection = CockfightBetSelection(o.label, o.odd, o.color, o.canonicalSide) }
                             )
                         }
                     }
@@ -10388,18 +11151,13 @@ private fun CockFightHlsStream(
                         selection = sel,
                         onDismiss = { betSelection = null },
                         onPlaceBet = { amount ->
-                            val side = cockfightLabelToSideApi(sel.label)
-                            if (side == null) {
-                                "Invalid bet side"
-                            } else {
-                                val (ok, err) = postMeronWalaBet(side, amount)
+                                val (ok, err) = postMeronWalaBet(sel.canonicalSide, amount)
                                 if (ok != null) {
                                     onWalletBalanceAfterBet?.invoke(ok.walletBalance)
                                     null
                                 } else {
                                     err
                                 }
-                            }
                         }
                     )
                 }

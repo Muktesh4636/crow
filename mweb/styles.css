@@ -2105,6 +2105,132 @@ a.profile-menu__row {
   color: #333;
   line-height: 1.45;
 }
+.referral-hero__err {
+  margin: -6px 0 14px;
+  font-size: 13px;
+  color: #c62828;
+  line-height: 1.35;
+}
+.referral-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+  text-align: left;
+}
+.referral-stat {
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+.referral-stat__v {
+  display: block;
+  font-size: 17px;
+  font-weight: 800;
+  color: #000;
+}
+.referral-stat__l {
+  display: block;
+  font-size: 11px;
+  color: #666;
+  margin-top: 2px;
+  font-weight: 600;
+}
+.referral-list__h {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #000;
+}
+.referral-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+.referral-list li {
+  font-size: 13px;
+  padding: 8px 0;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+.referral-list li:last-child {
+  border-bottom: none;
+}
+.referral-list__tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2e7d32;
+  background: #e8f5e9;
+  padding: 2px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.referral-stats--more {
+  margin-top: 10px;
+}
+.referral-ist {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: #555;
+  text-align: center;
+  line-height: 1.35;
+}
+.referral-section {
+  margin-bottom: 20px;
+}
+.referral-section__h {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #000;
+}
+.referral-table-wrap {
+  border: 1px solid #e8e8e8;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+.referral-table-wrap--scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.referral-table {
+  width: 100%;
+  min-width: 320px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.referral-table th,
+.referral-table td {
+  padding: 10px 8px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+  vertical-align: top;
+}
+.referral-table th {
+  font-weight: 700;
+  color: #666;
+  background: #fafafa;
+  white-space: nowrap;
+}
+.referral-table tr:last-child td {
+  border-bottom: none;
+}
+.referral-list__name {
+  font-weight: 600;
+  color: #000;
+  display: block;
+}
+.referral-list__joined {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
+}
 .referral-code {
   display: flex;
   align-items: center;
@@ -4102,7 +4228,7 @@ a.cockfight-ttl:focus-visible {
   font-family: inherit;
 }
 
-/* Cockfight: Meron VS Wala bar */
+/* Cockfight VS strip (Cock 1 / Cock 2 gradient; matches APK CockFightLiveScreen tones) */
 .cock-vs-bar {
   display: flex;
   align-items: center;
@@ -4110,7 +4236,12 @@ a.cockfight-ttl:focus-visible {
   border-radius: 10px;
   overflow: hidden;
   height: 44px;
-  background: linear-gradient(90deg, #c0392b 0%, #c0392b 40%, #2471a3 60%, #2471a3 100%);
+  background: linear-gradient(
+    90deg,
+    rgba(211, 47, 47, 0.95) 0%,
+    rgba(255, 111, 0, 0.85) 50%,
+    rgba(25, 118, 210, 0.95) 100%
+  );
 }
 .cock-vs-bar__side {
   flex: 1;
@@ -4168,7 +4299,7 @@ a.cockfight-ttl:focus-visible {
   height: 48px;
   border: none;
   border-radius: 12px;
-  background: var(--orange-primary, #f57c00);
+  background: var(--orange-primary, #ff8c00);
   color: #fff;
   font-size: 16px;
   font-weight: 700;
@@ -4229,19 +4360,20 @@ a.cockfight-ttl:focus-visible {
   transition: box-shadow 0.15s, transform 0.1s;
   box-sizing: border-box;
 }
+/* Portrait bet cards — solids match APK CockfightPortraitPlainRed/Green/Blue (MainActivity.kt) */
 .cockfight-side-btn--meron {
-  background: linear-gradient(160deg, #c0392b 0%, #922b21 100%);
+  background: #b74a4a;
 }
 /* Draw = tie — green */
 .cockfight-side-btn--draw {
-  background: linear-gradient(160deg, #27ae60 0%, #1e8449 100%);
+  background: #3f8f5c;
 }
-/* Green card = Wala side in API — blue */
+/* Cock 2 accent (historical `.cockfight-side-btn--green` class name; colors match APK blue side) */
 .cockfight-side-btn--green {
-  background: linear-gradient(160deg, #2980b9 0%, #1a5276 100%);
+  background: #3d73b5;
 }
 .cockfight-side-btn--wala {
-  background: linear-gradient(160deg, #2980b9 0%, #1a5276 100%);
+  background: #3d73b5;
 }
 .cockfight-side-btn.is-selected {
   box-shadow: 0 0 0 3px var(--orange-primary, #ff6b00);
@@ -4370,7 +4502,7 @@ a.cockfight-ttl:focus-visible {
   padding: 16px;
   border: none;
   border-radius: 12px;
-  background: var(--orange-primary, #ff6b00);
+  background: var(--orange-primary, #ff8c00);
   color: #fff;
   font-size: 16px;
   font-weight: 800;

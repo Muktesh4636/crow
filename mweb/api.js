@@ -20,7 +20,7 @@ window.KokorokoApi = (function () {
   const AUTH_PAYMENT_METHODS = "/api/auth/payment-methods/";
   const AUTH_PROFILE = "/api/auth/profile/";
   const AUTH_LOGOUT = "/api/auth/logout/";
-  const AUTH_BANK_DETAILS = "/api/auth/bank-details/";
+  const AUTH_REFERRAL_DATA = "/api/auth/referral-data/";
   const AUTH_WITHDRAWS_INITIATE = "/api/auth/withdraws/initiate/";
   const AUTH_DEPOSITS_MINE = "/api/auth/deposits/mine/";
   const AUTH_WITHDRAWS_MINE = "/api/auth/withdraws/mine/";
@@ -479,6 +479,48 @@ window.KokorokoApi = (function () {
     };
   }
 
+  async function fetchReferralData() {
+    if (!isAuthed()) return { data: null, error: "Sign in to view referral information." };
+    if (isLocalDemo()) {
+      const u = getLocalDemoUser() || "demo";
+      return {
+        data: {
+          referral_code: u,
+          total_referrals: 0,
+          active_referrals: 0,
+          instant_referral_bonus_per_referee: 0,
+          commission_rate_percent: 2,
+          total_commission_earnings: "0",
+          total_daily_commission_earnings: "0",
+          total_legacy_referral_bonus_earnings: "0",
+          commission_today_ist: null,
+          commission_slabs: [],
+          total_earnings: "0",
+          commission_earned_today: "0",
+          referrals: [],
+          recent_daily_commissions: []
+        },
+        error: null
+      };
+    }
+    const { ok, status, text } = await apiFetch(AUTH_REFERRAL_DATA, { method: "GET" });
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchReferralData();
+      clearSession();
+      dispatchAuth();
+      return { data: null, error: "Session expired" };
+    }
+    if (!ok) return { data: null, error: extractErrorText(text) || "Could not load referral data" };
+    try {
+      const j = JSON.parse(text);
+      const root = j.data != null ? j.data : j;
+      return { data: root, error: null };
+    } catch {
+      return { data: null, error: "Invalid referral response" };
+    }
+  }
+
   async function fetchProfile() {
     if (!isAuthed()) return { data: null, error: "Sign in to load your profile." };
     if (isLocalDemo()) {
@@ -661,6 +703,7 @@ window.KokorokoApi = (function () {
     }
   }
 
+  /** POST body `{ side, stake }`; `side` is COCK1 | COCK2 | DRAW (MERON/WALA legacy aliases accepted server-side). */
   async function postMeronWalaBet(side, stake) {
     if (!isAuthed()) return { data: null, error: "Sign in to place a bet" };
     if (isLocalDemo()) return { data: null, error: "Demo account cannot place bets" };
@@ -694,6 +737,7 @@ window.KokorokoApi = (function () {
     }
   }
 
+  /** GET /api/game/meron-wala/info/ — public; returns `session`, `round_id`, `open`, `side_labels`, `latest_round_video` (possibly `{}`), optional `last_result`. */
   async function fetchMeronWalaInfo() {
     const { ok, text, status } = await apiFetch(GAME_MERON_WALA_INFO, { method: "GET" });
     if (status === 401) {
@@ -706,6 +750,7 @@ window.KokorokoApi = (function () {
     try { return JSON.parse(text); } catch { return null; }
   }
 
+  /** GET /api/game/meron-wala/latest-round-video/ — public; `{ latest_round_video }` may be null. */
   async function fetchMeronWalaLatestVideo() {
     const { ok, text, status } = await apiFetch(GAME_MERON_WALA_LATEST_VIDEO, { method: "GET" });
     if (status === 401) {
@@ -782,6 +827,7 @@ window.KokorokoApi = (function () {
     fetchPaymentMethodsOnly,
     fetchPaymentMethodsDetails,
     fetchProfile,
+    fetchReferralData,
     postProfile,
     fetchBankDetails,
     postWithdrawInitiate,

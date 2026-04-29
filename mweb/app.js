@@ -174,6 +174,105 @@
     return hls;
   }
 
+  /** Canonical sides COCK1, COCK2, DRAW (+ COMPLETED overlays). Normalize MERON/WALA/aliases at JSON boundary. */
+  function canonicalCockfightSide(raw) {
+    const u = String(raw ?? "").trim().toUpperCase();
+    if (!u) return "";
+    if (["COCK1", "MERON", "RED", "M"].includes(u)) return "COCK1";
+    if (["COCK2", "WALA", "BLUE", "W"].includes(u)) return "COCK2";
+    if (u === "DRAW" || u === "D") return "DRAW";
+    if (u === "COMPLETED") return "COMPLETED";
+    return String(raw).trim();
+  }
+
+  function displayCockfightSide(canonical) {
+    switch (canonical) {
+      case "COCK1": return "Cock 1";
+      case "COCK2": return "Cock 2";
+      case "DRAW": return "Draw";
+      default: return String(canonical);
+    }
+  }
+
+  /** Merged COCK1/COCK2 display names from `/info` (`side_labels`; video overrides root).
+   *  Legacy API strings "Meron"/"Wala" are normalized to Cock 1 / Cock 2 for UI. */
+  let cfMergedSideLabels = { COCK1: "Cock 1", COCK2: "Cock 2" };
+
+  function sanitizeCfSideLabels(merged) {
+    const norm = (s) =>
+      String(s ?? "")
+        .normalize("NFKC")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    let c1 = norm(merged.COCK1);
+    let c2 = norm(merged.COCK2);
+    if (!c1) c1 = "Cock 1";
+    if (!c2) c2 = "Cock 2";
+    if (/^meron$/i.test(c1)) c1 = "Cock 1";
+    if (/^wala$/i.test(c2)) c2 = "Cock 2";
+    return { COCK1: c1, COCK2: c2 };
+  }
+
+  function mergeCockfightSideLabels(info) {
+    const def = { COCK1: "Cock 1", COCK2: "Cock 2" };
+    if (!info || typeof info !== "object") return sanitizeCfSideLabels(cfMergedSideLabels);
+    const vid = info.latest_round_video && info.latest_round_video.side_labels;
+    const root = info.side_labels;
+    return sanitizeCfSideLabels({
+      COCK1:
+        (vid && vid.COCK1) ??
+        (root && root.COCK1) ??
+        def.COCK1,
+      COCK2:
+        (vid && vid.COCK2) ??
+        (root && root.COCK2) ??
+        def.COCK2,
+    });
+  }
+
+  /** VS strip + bet cards: same merged `side_labels` from `/info` (custom names e.g. Red / Black). */
+  function applyCockfightSideLabels(info) {
+    cfMergedSideLabels = mergeCockfightSideLabels(info);
+    const c1 = cfMergedSideLabels.COCK1;
+    const c2 = cfMergedSideLabels.COCK2;
+    document.querySelectorAll("[data-cf-vs]").forEach((el) => {
+      const k = el.getAttribute("data-cf-vs");
+      if (k === "COCK1") el.textContent = c1;
+      if (k === "COCK2") el.textContent = c2;
+    });
+    ["cockfight-side-bar", "cockfight-fs-side-bar"].forEach((barId) => {
+      const bar = document.getElementById(barId);
+      if (!bar) return;
+      bar.querySelectorAll("[data-cf-side]").forEach((btn) => {
+        const key = btn.getAttribute("data-cf-side");
+        if (key === "COCK1" || key === "Meron") {
+          btn.setAttribute("data-cf-display", c1);
+          const lab = btn.querySelector(".cockfight-side-btn__lab");
+          if (lab) lab.textContent = c1;
+        } else if (key === "COCK2" || key === "Wala") {
+          btn.setAttribute("data-cf-display", c2);
+          const lab = btn.querySelector(".cockfight-side-btn__lab");
+          if (lab) lab.textContent = c2;
+        }
+      });
+    });
+  }
+
+  /** Prefer API `side_label`; legacy Meron/Wala → Cock 1/Cock 2; else merged names. */
+  function cockfightBetSideDisplay(row) {
+    const raw = row && typeof row.side_label === "string" && row.side_label.trim();
+    if (raw) {
+      if (/^meron$/i.test(raw)) return "Cock 1";
+      if (/^wala$/i.test(raw)) return "Cock 2";
+      return raw;
+    }
+    const c = canonicalCockfightSide(row && row.side);
+    if (c === "COCK1") return cfMergedSideLabels.COCK1 || "Cock 1";
+    if (c === "COCK2") return cfMergedSideLabels.COCK2 || "Cock 2";
+    return displayCockfightSide(c);
+  }
+
   function startCockfightPreload(url) {
     if (cfPreloadUrl === url) return;
     cfPreloadUrl = url;
@@ -234,6 +333,7 @@
     if (!video) return;
 
     const info = await K.fetchMeronWalaInfo();
+    if (info) applyCockfightSideLabels(info);
     const lv = info?.latest_round_video;
 
     // Use server_time for all time calculations to correct device clock skew.
@@ -258,6 +358,7 @@
         cfPreloadPollTimer = setInterval(async () => {
           try {
             const fresh = await K.fetchMeronWalaInfo();
+            if (fresh) applyCockfightSideLabels(fresh);
             const freshLv = fresh?.latest_round_video;
             if (freshLv?.hls_url) {
               clearInterval(cfPreloadPollTimer);
@@ -608,6 +709,7 @@
       }
       const info = await K.fetchMeronWalaInfo();
       if (!info) return;
+      applyCockfightSideLabels(info);
       // Session just settled — last_result will have the winner
       if (!info.open && info.last_result?.winner) {
         clearInterval(cfResultPollInterval); cfResultPollInterval = null;
@@ -634,16 +736,21 @@
     if (_vidFs) { _vidFs.pause(); _vidFs.style.visibility = "hidden"; }
 
     // Set winner name / match-complete message
-    const labelMap = {
-      MERON: "Meron Wins! 🐓", BLUE: "Wala Wins! 🐓",
-      WALA: "Wala Wins! 🐓", DRAW: "It's a Draw! 🤝",
-      RED: "Meron Wins! 🐓", COMPLETED: "Match Completed 🏆"
+    const w = canonicalCockfightSide(winner);
+    const l1 = cfMergedSideLabels.COCK1 || "Cock 1";
+    const l2 = cfMergedSideLabels.COCK2 || "Cock 2";
+    const titles = {
+      COCK1: `${l1} Wins! 🐓`,
+      COCK2: `${l2} Wins! 🐓`,
+      DRAW: "It's a Draw! 🤝",
+      COMPLETED: "Match Completed 🏆",
     };
-    nameEl.textContent = labelMap[winner?.toUpperCase()] || (winner + " Wins!");
+    nameEl.textContent =
+      titles[w] || (winner && String(winner).trim() ? String(winner).trim() + " Wins!" : "Winner!");
 
     // Sub-title tweak for generic completion
     const subEl = overlay.querySelector(".cf-winner__sub");
-    if (winner?.toUpperCase() === "COMPLETED") {
+    if (w === "COMPLETED") {
       if (subEl) subEl.textContent = "Results will be announced shortly.";
     } else {
       if (subEl) subEl.textContent = "Congratulations to all winners!";
@@ -652,7 +759,7 @@
     // Check user's own last bet result (only when winner is known)
     badgeEl.textContent = "";
     badgeEl.className = "cf-winner__badge";
-    if (winner?.toUpperCase() !== "COMPLETED") {
+    if (w !== "COMPLETED") {
       K.fetchMeronWalaBetsMine && K.fetchMeronWalaBetsMine().then(res => {
         const bets = res?.data || [];
         const last = bets[0];
@@ -757,6 +864,7 @@
         return;
       }
       const fresh = await K.fetchMeronWalaInfo();
+      if (fresh) applyCockfightSideLabels(fresh);
       const flv = fresh?.latest_round_video;
       if (flv?.hls_url) {
         clearInterval(cfPollInterval); cfPollInterval = null;
@@ -797,6 +905,211 @@
     location.hash = key;
   }
 
+  function formatReferralCommissionPct(p) {
+    const x = Number(p);
+    if (!Number.isFinite(x)) return "—";
+    if (Math.abs(x - Math.round(x)) < 1e-6) return String(Math.round(x));
+    const t = Math.round(x * 10) / 10;
+    return String(t).replace(/\.0$/, "");
+  }
+
+  function formatReferralDateJoin(iso) {
+    if (iso == null || iso === "") return "";
+    const s = String(iso).trim();
+    const d = s.includes("T") ? s.slice(0, 10) : s.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}/.test(d)) return s.slice(0, 16).replace("T", " ");
+    try {
+      const [y, m, day] = d.split("-").map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, day));
+      const mon = dt.toLocaleString("en-IN", { month: "short", timeZone: "UTC" });
+      return `${day} ${mon} ${y}`;
+    } catch {
+      return d;
+    }
+  }
+
+  async function refreshReferralSubview() {
+    const heroH = document.getElementById("referral-hero-h");
+    const heroErr = document.getElementById("referral-hero-err");
+    const statsEl = document.getElementById("referral-stats");
+    const statsMoreEl = document.getElementById("referral-stats-more");
+    const istLine = document.getElementById("referral-commission-ist-line");
+    const slabsSec = document.getElementById("referral-slabs-section");
+    const slabsBody = document.getElementById("referral-slabs-tbody");
+    const dailySec = document.getElementById("referral-daily-section");
+    const dailyBody = document.getElementById("referral-daily-tbody");
+    const listEl = document.getElementById("referral-list");
+    const listHeading = document.getElementById("referral-list-heading");
+    const disp = document.getElementById("referral-code-display");
+    const cb = document.getElementById("referral-copy-btn");
+    if (!heroH || !K || typeof K.fetchReferralData !== "function") return;
+    if (heroErr) {
+      heroErr.hidden = true;
+      heroErr.textContent = "";
+    }
+    const hideExtra = () => {
+      if (statsMoreEl) statsMoreEl.hidden = true;
+      if (istLine) istLine.hidden = true;
+      if (slabsSec) slabsSec.hidden = true;
+      if (dailySec) dailySec.hidden = true;
+      if (slabsBody) slabsBody.textContent = "";
+      if (dailyBody) dailyBody.textContent = "";
+    };
+    const { data, error } = await K.fetchReferralData();
+    if (error || !data) {
+      hideExtra();
+      if (heroErr) {
+        heroErr.textContent = error || "Could not load referral data.";
+        heroErr.hidden = false;
+      }
+      heroH.textContent = "Receive —% Commission.";
+      if (statsEl) statsEl.hidden = true;
+      if (listEl) {
+        listEl.hidden = true;
+        listEl.textContent = "";
+      }
+      if (listHeading) listHeading.hidden = true;
+      if (disp) disp.textContent = "— — —";
+      if (cb) {
+        cb.setAttribute("data-copy", "");
+        cb.disabled = true;
+      }
+      return;
+    }
+    let pct = formatReferralCommissionPct(data.commission_rate_percent);
+    if (pct === "—" && Array.isArray(data.commission_slabs) && data.commission_slabs.length) {
+      pct = formatReferralCommissionPct(data.commission_slabs[0].commission_percent);
+    }
+    heroH.textContent = pct === "—" ? "Receive —% Commission." : `Receive ${pct}% Commission.`;
+    const raw = String(data.referral_code || "").trim();
+    if (disp) disp.textContent = raw ? [...raw].join(" ") : "—";
+    if (cb) {
+      cb.setAttribute("data-copy", raw);
+      cb.disabled = !raw;
+    }
+    const fmtMoney = (v) => {
+      if (v == null || v === "") return "₹0";
+      if (typeof v === "number" && Number.isFinite(v)) return v % 1 === 0 ? "₹" + v : "₹" + v.toFixed(2).replace(/\.?0+$/, "");
+      const t = String(v).trim();
+      return t ? (t.startsWith("₹") ? t : "₹" + t) : "₹0";
+    };
+    const st = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v != null ? String(v) : "—";
+    };
+    st("referral-stat-total", data.total_referrals);
+    st("referral-stat-active", data.active_referrals);
+    const earningsEl = document.getElementById("referral-stat-earnings");
+    const todayEl = document.getElementById("referral-stat-today");
+    if (earningsEl) earningsEl.textContent = fmtMoney(data.total_earnings);
+    if (todayEl) todayEl.textContent = fmtMoney(data.commission_earned_today);
+    if (statsEl) statsEl.hidden = false;
+
+    const bonusN = Number(data.instant_referral_bonus_per_referee);
+    st("referral-stat-bonus-ref", Number.isFinite(bonusN) ? fmtMoney(bonusN) : "—");
+    st("referral-stat-total-comm", fmtMoney(data.total_commission_earnings));
+    st("referral-stat-daily-comm", fmtMoney(data.total_daily_commission_earnings));
+    st("referral-stat-legacy", fmtMoney(data.total_legacy_referral_bonus_earnings));
+    if (statsMoreEl) statsMoreEl.hidden = false;
+
+    const ist = data.commission_today_ist != null && String(data.commission_today_ist).trim() !== "";
+    if (istLine) {
+      if (ist) {
+        istLine.hidden = false;
+        istLine.textContent = `Today’s commission date (IST): ${String(data.commission_today_ist).trim()}`;
+      } else {
+        istLine.hidden = true;
+        istLine.textContent = "";
+      }
+    }
+
+    if (slabsBody && slabsSec) {
+      slabsBody.textContent = "";
+      const slabs = Array.isArray(data.commission_slabs) ? data.commission_slabs : [];
+      if (slabs.length) {
+        slabsSec.hidden = false;
+        slabs.forEach((s) => {
+          const tr = document.createElement("tr");
+          const minR = s.min_referrals != null ? String(s.min_referrals) : "—";
+          let maxCell = "∞";
+          if (s.max_referrals != null && s.max_referrals !== "") maxCell = String(s.max_referrals);
+          const pctS = formatReferralCommissionPct(s.commission_percent);
+          [minR, maxCell, pctS === "—" ? "—" : `${pctS}%`].forEach((cell) => {
+            const td = document.createElement("td");
+            td.textContent = cell;
+            tr.appendChild(td);
+          });
+          slabsBody.appendChild(tr);
+        });
+      } else {
+        slabsSec.hidden = true;
+      }
+    }
+
+    if (dailyBody && dailySec) {
+      dailyBody.textContent = "";
+      const daily = Array.isArray(data.recent_daily_commissions) ? data.recent_daily_commissions : [];
+      if (daily.length) {
+        dailySec.hidden = false;
+        daily.slice(0, 50).forEach((row) => {
+          const tr = document.createElement("tr");
+          const d = String(row.commission_date || "").trim() || "—";
+          const pl = String(row.referee_username || "").trim() || "—";
+          const loss = row.loss_amount != null ? fmtMoney(row.loss_amount) : "—";
+          const p = formatReferralCommissionPct(row.commission_percent);
+          const comm = row.commission_amount != null ? fmtMoney(row.commission_amount) : "—";
+          [d, pl, loss, p === "—" ? "—" : `${p}%`, comm].forEach((cell) => {
+            const td = document.createElement("td");
+            td.textContent = cell;
+            tr.appendChild(td);
+          });
+          dailyBody.appendChild(tr);
+        });
+      } else {
+        dailySec.hidden = true;
+      }
+    }
+
+    const refs = Array.isArray(data.referrals) ? data.referrals : [];
+    if (listEl && listHeading) {
+      if (!refs.length) {
+        listEl.hidden = true;
+        listHeading.hidden = true;
+        listEl.textContent = "";
+      } else {
+        listHeading.hidden = false;
+        listEl.hidden = false;
+        listEl.textContent = "";
+        refs.slice(0, 50).forEach((r) => {
+          const li = document.createElement("li");
+          const wrap = document.createElement("div");
+          wrap.style.cssText = "display:flex;align-items:flex-start;justify-content:space-between;gap:8px;width:100%;";
+          const left = document.createElement("div");
+          const name = document.createElement("span");
+          name.className = "referral-list__name";
+          name.textContent = String(r.username || "").trim() || "—";
+          left.appendChild(name);
+          const joined = formatReferralDateJoin(r.date_joined);
+          if (joined) {
+            const j = document.createElement("span");
+            j.className = "referral-list__joined";
+            j.textContent = `Joined ${joined}`;
+            left.appendChild(j);
+          }
+          wrap.appendChild(left);
+          if (r.has_deposit) {
+            const tag = document.createElement("span");
+            tag.className = "referral-list__tag";
+            tag.textContent = "Deposited";
+            wrap.appendChild(tag);
+          }
+          li.appendChild(wrap);
+          listEl.appendChild(li);
+        });
+      }
+    }
+  }
+
   function showProfileView(name) {
     const root = document.getElementById("profile-panel");
     if (!root) return;
@@ -804,6 +1117,7 @@
       const sub = el.getAttribute("data-profile-sub");
       el.hidden = sub !== name;
     });
+    if (name === "referral") void refreshReferralSubview();
   }
 
   function onHash() {
@@ -2223,8 +2537,8 @@
     function syncCfFsFromMain() {
       const mainBar = document.getElementById("cockfight-side-bar");
       const sel = mainBar && mainBar.querySelector(".cockfight-side-btn.is-selected");
-      const side = sel ? sel.getAttribute("data-cf-side") : "Meron";
-      setCfSide(side || "Meron");
+      const side = sel ? sel.getAttribute("data-cf-side") : "COCK1";
+      setCfSide(side || "COCK1");
       const mainChips = document.getElementById("cock-chips");
       const chipOn = mainChips && mainChips.querySelector(".cock-chip.is-on");
       const amt = chipOn ? chipOn.getAttribute("data-amt") : "100";
@@ -2233,8 +2547,8 @@
     function syncCfMainFromFs() {
       const fsBar = document.getElementById("cockfight-fs-side-bar");
       const sel = fsBar && fsBar.querySelector(".cockfight-side-btn.is-selected");
-      const side = sel ? sel.getAttribute("data-cf-side") : "Meron";
-      setCfSide(side || "Meron");
+      const side = sel ? sel.getAttribute("data-cf-side") : "COCK1";
+      setCfSide(side || "COCK1");
       const fsChips = document.getElementById("cockfight-fs-chips");
       const chipOn = fsChips && fsChips.querySelector(".cock-chip.is-on");
       const amt = chipOn ? chipOn.getAttribute("data-amt") : "100";
@@ -2294,7 +2608,15 @@
     document.getElementById("cf-bet-sheet-fs-bd")?.addEventListener("click", () => closeCfBetSheet("fs"));
     document.getElementById("cf-bet-sheet-fs-close")?.addEventListener("click", () => closeCfBetSheet("fs"));
 
-    const sideMap = { Meron: "MERON", Draw: "DRAW", Wala: "WALA" };
+    /** `data-cf-side` → POST body side (canonical; legacy Meron/Wala/Draw still accepted here). */
+    const uiSideToCanonical = {
+      COCK1: "COCK1",
+      COCK2: "COCK2",
+      DRAW: "DRAW",
+      Meron: "COCK1",
+      Wala: "COCK2",
+      Draw: "DRAW",
+    };
     function getCfBetContext() {
       const fsDlg = document.getElementById("cockfight-fullscreen");
       const fsSheet = document.getElementById("cf-bet-sheet-fs");
@@ -2312,7 +2634,7 @@
         ctx === "fs" ? document.getElementById("cockfight-fs-chips") : document.getElementById("cock-chips");
       const sideEl = bar && bar.querySelector(".cockfight-side-btn.is-selected");
       if (!sideEl) {
-        window.alert("Pick Meron, Draw, or Wala");
+        window.alert("Pick Cock 1, Draw, or Cock 2");
         return;
       }
       if (!K || !K.isAuthed()) {
@@ -2324,7 +2646,7 @@
         return;
       }
       const lab = sideEl.getAttribute("data-cf-side");
-      const apiSide = sideMap[lab] || "MERON";
+      const apiSide = uiSideToCanonical[lab] ?? "COCK1";
       const chip = chipRoot && chipRoot.querySelector(".cock-chip.is-on");
       const amt = parseInt(chip ? chip.getAttribute("data-amt") : "100", 10) || 100;
       const { data, error } = await K.postMeronWalaBet(apiSide, amt);
@@ -2396,7 +2718,7 @@
           .map(
             (b) =>
               "<li>" +
-              (b.side || "") +
+              (cockfightBetSideDisplay(b).toUpperCase()) +
               " · ₹" +
               (b.stake != null ? b.stake : "") +
               " · " +
@@ -2421,8 +2743,9 @@
   })();
 
   document.getElementById("referral-share-row")?.addEventListener("click", () => {
-    const code = "AGHMU545";
-    const text = `Join me on Kokoroko! Code: ${code}`;
+    const btn = document.getElementById("referral-copy-btn");
+    const code = (btn && btn.getAttribute("data-copy")) ? btn.getAttribute("data-copy").trim() : "";
+    const text = code ? `Join me on Kokoroko! Code: ${code}` : "Join me on Kokoroko!";
     if (navigator.share) {
       navigator.share({ title: "Kokoroko", text }).catch(() => {});
     } else {
