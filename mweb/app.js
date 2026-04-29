@@ -11,6 +11,12 @@
   let cockfightMaxTime = 0;
   let cockfightDialogOpen = false;
   let cfCountdownInterval = null;
+  let cfVideoUrls = null;
+  let cfCurrentQuality = -1;      // -1 = auto ABR; 0,1,2... = specific hls.js level index
+  let cfPreloadUrl = null;
+  let cfPreloadPollTimer = null;
+  let cfHlsInstance = null;       // hls.js instance for main #cockfight-video
+  let cfHlsFsInstance = null;     // hls.js instance for #cockfight-video-fs (fullscreen)
   let lastBankWithdraw = { upi: "", bankAcc: "", bankIfsc: "" };
 
   function balanceNumOnly(s) {
@@ -107,6 +113,122 @@
     return m[0].id || 1;
   }
   /** #cockfight only: local MP4 (assets/cockfight_live_stream.mp4) — no HLS, no controls, no forward seek, no pause. */
+  /**
+   * Silently buffer `url` using the REAL #cockfight-video element.
+   * Mobile browsers ignore preload on hidden/off-screen elements;
+   * they only buffer the visible video. The countdown overlay sits on
+   * top so the user never sees the unstarted video frame underneath.
+   */
+  /** Destroy a hls.js instance safely. */
+  function destroyCfHls(instance) {
+    if (instance) { try { instance.destroy(); } catch {} }
+  }
+
+  /**
+   * Attach an HLS stream to a video element.
+   * iOS/macOS Safari support HLS natively; all other browsers need hls.js.
+   * Returns the new Hls instance (or null for native).
+   */
+  function attachHls(video, url, { maxBuffer = 120, onReady, onError } = {}) {
+    // Native HLS (Safari)
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = url;
+      video.setAttribute("data-cf-src", url);
+      if (onReady) video.addEventListener("loadedmetadata", onReady, { once: true });
+      return null;
+    }
+    // hls.js for Chrome / Firefox / Android
+    if (!window.Hls || !Hls.isSupported()) {
+      // Fallback: try setting src directly (may not work, but better than nothing)
+      video.src = url;
+      video.setAttribute("data-cf-src", url);
+      if (onReady) video.addEventListener("loadedmetadata", onReady, { once: true });
+      return null;
+    }
+    const hls = new Hls({
+      maxBufferLength: maxBuffer,
+      maxMaxBufferLength: maxBuffer * 2,
+      autoStartLoad: true,
+      startFragPrefetch: true,
+      lowLatencyMode: false,
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+    video.setAttribute("data-cf-src", url);
+    if (onReady) {
+      // Use video's loadedmetadata (not MANIFEST_PARSED) so that video.duration
+      // is guaranteed to be set before startSynced tries to seek.
+      // hls.js triggers all standard HTML5 video events on the attached element.
+      video.addEventListener("loadedmetadata", onReady, { once: true });
+    }
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (!data.fatal) return;
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        hls.startLoad();
+      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        hls.recoverMediaError();
+      } else {
+        if (onError) onError(data);
+      }
+    });
+    return hls;
+  }
+
+  function startCockfightPreload(url) {
+    if (cfPreloadUrl === url) return;
+    cfPreloadUrl = url;
+    const video = document.getElementById("cockfight-video");
+    if (!video) return;
+    video.muted = true;
+    video.preload = "auto";
+    // Create HLS player in buffering mode — play() silently to trigger downloading.
+    // Countdown overlay sits on top; user sees nothing. Audio is muted.
+    destroyCfHls(cfHlsInstance);
+    cfHlsInstance = attachHls(video, url, {
+      maxBuffer: 120,
+      onReady: () => { video.play().catch(() => {}); },
+    });
+  }
+
+  /** Cancel the preload poll timer (video element stays buffered — don't touch it). */
+  function stopCockfightPreload() {
+    if (cfPreloadPollTimer) { clearInterval(cfPreloadPollTimer); cfPreloadPollTimer = null; }
+    // cfPreloadUrl stays set so countdown callback knows what URL was buffered
+  }
+
+  /**
+   * Wait until `targetSecs` seconds are buffered ahead of currentTime,
+   * then call `callback`. Falls back after `timeoutMs` so playback
+   * never gets stuck if the network is too slow.
+   */
+  function waitForBuffer(video, targetSecs, timeoutMs, callback) {
+    const getAhead = () => {
+      const ct = video.currentTime;
+      for (let i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= ct + 0.5 && video.buffered.end(i) > ct) {
+          return video.buffered.end(i) - ct;
+        }
+      }
+      return 0;
+    };
+    const dur = video.duration;
+    const remaining = isFinite(dur) ? Math.max(0, dur - video.currentTime) : Infinity;
+    const need = Math.min(targetSecs, remaining);
+
+    if (getAhead() >= need || need <= 0) { callback(); return; }
+
+    let fired = false;
+    const fire = () => {
+      if (fired) return;
+      fired = true;
+      video.removeEventListener("progress", onProgress);
+      callback();
+    };
+    const onProgress = () => { if (getAhead() >= need) fire(); };
+    video.addEventListener("progress", onProgress);
+    setTimeout(fire, timeoutMs); // Fallback — play regardless after timeout
+  }
+
   async function setupCockfightLiveStream() {
     const video = document.getElementById("cockfight-video");
     if (!video) return;
@@ -114,21 +236,53 @@
     const info = await K.fetchMeronWalaInfo();
     const lv = info?.latest_round_video;
 
-    const startMs = lv?.start ? new Date(lv.start).getTime() : null;
-    const nowMs = Date.now();
+    // Use server_time for all time calculations to correct device clock skew.
+    // clockSkew = how much the device clock is ahead of the server clock.
+    const fetchedAt = Date.now();
+    const serverMs = lv?.server_time ? new Date(lv.server_time).getTime() : fetchedAt;
+    const clockSkew = serverMs - fetchedAt; // e.g. +5000 = device is 5s behind server
+    // serverNow() returns the current time in server's reference frame
+    const serverNow = () => Date.now() + clockSkew;
 
-    // ── Step 1: If start time is in the future, ALWAYS show countdown first ──
+    const startMs = lv?.start ? new Date(lv.start).getTime() : null;
+    const nowMs = serverNow();
+
+    // ── Step 1: If start time is in the future, show countdown and preload video ──
     if (startMs && startMs > nowMs) {
       hideCockfightVideoOverlay();
-      startCockfightCountdown(startMs, () => {
+
+      if (lv.hls_url) {
+        startCockfightPreload(lv.hls_url);
+      } else if (!lv.requires_authentication) {
+        // URL not yet available — poll API every 20 s until server releases it
+        cfPreloadPollTimer = setInterval(async () => {
+          try {
+            const fresh = await K.fetchMeronWalaInfo();
+            const freshLv = fresh?.latest_round_video;
+            if (freshLv?.hls_url) {
+              clearInterval(cfPreloadPollTimer);
+              cfPreloadPollTimer = null;
+              startCockfightPreload(freshLv.hls_url);
+            }
+          } catch {}
+        }, 20_000);
+      }
+
+      // Pass clockSkew so countdown uses server time, not device time
+      startCockfightCountdown(startMs, clockSkew, async () => {
         hideCockfightCountdown();
-        pollForCockfightUrl(video, 0);
+        const playUrl = cfPreloadUrl;
+        stopCockfightPreload();
+        if (playUrl) {
+          loadAndPlayCockfightVideo(video, playUrl, 0, 60);
+        } else {
+          pollForCockfightUrl(video, 0);
+        }
       });
       return;
     }
 
     // ── Step 2: Start time already past or no start time — check URL now ──
-    // If session just settled show winner screen first
     if (!info.open && info.last_result?.winner) {
       showWinnerOverlay(info.last_result.winner);
       return;
@@ -137,103 +291,277 @@
       showCockfightVideoOverlay("unavailable");
       return;
     }
-    if (lv.requires_authentication && !lv.url) {
+    if (lv.requires_authentication && !lv.hls_url) {
       showCockfightVideoOverlay("login");
       return;
     }
-    if (!lv.url) {
-      showCockfightVideoOverlay("unavailable");
+    if (!lv.hls_url) {
+      if (startMs) {
+        pollForCockfightUrl(video, Math.floor((nowMs - startMs) / 1000));
+      } else {
+        showCockfightVideoOverlay("unavailable");
+      }
       return;
     }
 
     hideCockfightVideoOverlay();
 
+    // elapsed = seconds since match started, corrected for clock skew
     if (startMs) {
-      // Start is in the past — match is live, show "LIVE" screen briefly then seek
       const elapsed = Math.floor((nowMs - startMs) / 1000);
-      startCockfightCountdown(startMs, () => {
-        hideCockfightCountdown();
-        loadAndPlayCockfightVideo(video, lv.url, elapsed);
-      });
-    } else {
-      // No scheduled time — play from beginning
       hideCockfightCountdown();
-      loadAndPlayCockfightVideo(video, lv.url, 0);
+      loadAndPlayCockfightVideo(video, lv.hls_url, elapsed);
+    } else {
+      hideCockfightCountdown();
+      loadAndPlayCockfightVideo(video, lv.hls_url, 0);
     }
   }
 
-  function loadAndPlayCockfightVideo(video, src, seekSeconds) {
-    video.loop = true;
-    video.muted = true;
-    video.poster = "assets/cockfight_banner.png";
-
-    if (video.getAttribute("data-cf-src") !== src) {
-      video.replaceChildren();
-      video.src = src;
-      video.setAttribute("data-cf-src", src);
-      video.load();
+  /** Populate quality picker from hls.js levels. Called after MANIFEST_PARSED. */
+  function setupQualityPickerFromHls(levels) {
+    if (!levels || levels.length < 2) {
+      ["cf-quality-wrap", "cf-quality-wrap-fs"].forEach(id => {
+        const w = document.getElementById(id);
+        if (w) w.hidden = true;
+      });
+      return;
     }
 
-    // Seek to live position once metadata is ready
-    if (seekSeconds > 0) {
-      const onMeta = () => {
-        video.removeEventListener("loadedmetadata", onMeta);
-        if (video.duration && seekSeconds < video.duration) {
-          video.currentTime = seekSeconds % video.duration;
-        }
-        video.play().catch(() => {});
+    ["cf-quality-wrap", "cf-quality-wrap-fs"].forEach(id => {
+      const wrap = document.getElementById(id);
+      if (wrap) wrap.hidden = false;
+    });
+
+    const labelFor = (idx) => {
+      if (idx === -1) return "Auto";
+      const l = levels[idx];
+      return l ? (l.height ? l.height + "p" : "Level " + idx) : "Auto";
+    };
+
+    [
+      { menuId: "cf-quality-menu",    btnId: "cf-quality-btn",    labelId: "cf-quality-label"    },
+      { menuId: "cf-quality-menu-fs", btnId: "cf-quality-btn-fs", labelId: "cf-quality-label-fs" }
+    ].forEach(({ menuId, btnId, labelId }) => {
+      const menu  = document.getElementById(menuId);
+      const btn   = document.getElementById(btnId);
+      const label = document.getElementById(labelId);
+      if (!menu || !btn) return;
+
+      menu.innerHTML = "";
+      // Auto option
+      const autoOpt = document.createElement("button");
+      autoOpt.className = "cf-quality__opt" + (cfCurrentQuality === -1 ? " is-active" : "");
+      autoOpt.dataset.q = "-1";
+      autoOpt.role = "menuitem";
+      autoOpt.textContent = "Auto";
+      menu.appendChild(autoOpt);
+      // Per-level options (highest quality first)
+      [...levels].reverse().forEach((lvl, ri) => {
+        const idx = levels.length - 1 - ri;
+        const opt = document.createElement("button");
+        opt.className = "cf-quality__opt" + (cfCurrentQuality === idx ? " is-active" : "");
+        opt.dataset.q = String(idx);
+        opt.role = "menuitem";
+        opt.textContent = lvl.height ? lvl.height + "p" : "Level " + idx;
+        menu.appendChild(opt);
+      });
+
+      if (label) label.textContent = labelFor(cfCurrentQuality);
+
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const open = !menu.hidden;
+        menu.hidden = open;
+        btn.setAttribute("aria-expanded", String(!open));
       };
-      video.addEventListener("loadedmetadata", onMeta);
+      menu.onclick = (e) => {
+        const opt = e.target.closest(".cf-quality__opt");
+        if (!opt) return;
+        menu.hidden = true;
+        btn.setAttribute("aria-expanded", "false");
+        switchQuality(Number(opt.dataset.q));
+      };
+    });
+
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".cf-quality__menu").forEach(m => { m.hidden = true; });
+      document.querySelectorAll(".cf-quality__btn").forEach(b => b.setAttribute("aria-expanded", "false"));
+    }, { capture: true, passive: true });
+  }
+
+  function switchQuality(levelIndex) {
+    cfCurrentQuality = levelIndex;
+
+    // Update labels and active state
+    const labelFor = (idx) => {
+      if (!cfHlsInstance || idx === -1) return idx === -1 ? "Auto" : String(idx);
+      const l = cfHlsInstance.levels[idx];
+      return l?.height ? l.height + "p" : "Level " + idx;
+    };
+    document.querySelectorAll(".cf-quality__opt").forEach(opt => {
+      opt.classList.toggle("is-active", Number(opt.dataset.q) === levelIndex);
+    });
+    document.querySelectorAll("[id^='cf-quality-label']").forEach(el => {
+      el.textContent = labelFor(levelIndex);
+    });
+
+    // Apply to main player via hls.js — no reload needed
+    if (cfHlsInstance) {
+      cfHlsInstance.currentLevel = levelIndex; // -1 = auto ABR
+    }
+    // Apply to fullscreen player
+    if (cfHlsFsInstance) {
+      cfHlsFsInstance.currentLevel = levelIndex;
+    }
+  }
+
+  // minBufferSecs: wait for this many seconds to be buffered before playing.
+  // 60 for countdown/preload start, 0 for mid-match joins (already synced, play fast).
+  function loadAndPlayCockfightVideo(video, src, seekSeconds, minBufferSecs = 0) {
+    video.loop = false;
+    video.muted = true;
+    video.preload = "auto";
+    video.poster = "assets/cockfight_banner.png";
+
+    let syncDone = false;
+    const startSynced = () => {
+      if (syncDone) return;
+      syncDone = true;
+      const dur = video.duration;
+      if (isFinite(dur) && seekSeconds >= dur) {
+        showWinnerOverlay("COMPLETED", 60);
+        return;
+      }
+      if (isFinite(dur)) {
+        cockfightMaxTime = seekSeconds;
+        video.currentTime = seekSeconds;
+      }
+      waitForBuffer(video, minBufferSecs, 10_000, () => {
+        video.play().catch(() => {});
+      });
+    };
+
+    const srcChanged = video.getAttribute("data-cf-src") !== src;
+
+    if (srcChanged) {
+      // Destroy old HLS instance; attach new one
+      destroyCfHls(cfHlsInstance);
+      cfHlsInstance = attachHls(video, src, {
+        maxBuffer: 120,
+        onReady: startSynced,
+      });
+      // Apply stored quality level preference
+      if (cfHlsInstance && cfCurrentQuality !== -1) {
+        cfHlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+          cfHlsInstance.currentLevel = cfCurrentQuality;
+        });
+      }
+      // Populate quality picker once levels are known
+      if (cfHlsInstance) {
+        cfHlsInstance.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+          setupQualityPickerFromHls(data.levels);
+        });
+      }
+    } else if (video.readyState >= 1) {
+      startSynced();
+    } else {
+      // HLS is still loading — wait for metadata
+      video.addEventListener("loadedmetadata", function onMeta() {
+        video.removeEventListener("loadedmetadata", onMeta);
+        startSynced();
+      });
     }
 
     if (!cockfightLiveBound) {
       cockfightLiveBound = true;
+
       video.addEventListener("timeupdate", () => {
         if (location.hash !== "#cockfight") return;
         if (video.currentTime + 0.3 < cockfightMaxTime) cockfightMaxTime = 0;
         cockfightMaxTime = Math.max(cockfightMaxTime, video.currentTime);
       });
+
+      // Anti-scrub: only block large deliberate forward seeks (> 3 s ahead),
+      // not tiny internal browser adjustments that happen during buffering/decode
       video.addEventListener("seeking", () => {
         if (location.hash !== "#cockfight") return;
-        if (video.currentTime > cockfightMaxTime + 0.2) {
+        if (video.currentTime > cockfightMaxTime + 3) {
           try { video.currentTime = cockfightMaxTime; } catch {}
         }
       });
+
+      // Don't resume immediately on pause — mobile browsers internally pause
+      // during buffering. Resuming instantly fights the buffer fetch and causes
+      // the stuck loop. Wait 800 ms and only resume if still paused.
       video.addEventListener("pause", () => {
         if (location.hash !== "#cockfight") return;
         if (cockfightDialogOpen) return;
+        if (video.ended) return;
         if (!document.getElementById("cockfight-panel") || document.getElementById("cockfight-panel").hidden) return;
-        video.play().catch(() => {});
+        setTimeout(() => {
+          if (video.paused && !video.ended && location.hash === "#cockfight") {
+            video.play().catch(() => {});
+          }
+        }, 800);
       });
-      video.addEventListener("stalled", () => {
-        if (location.hash === "#cockfight") video.play().catch(() => {});
+
+      video.addEventListener("ended", () => {
+        if (location.hash !== "#cockfight") return;
+        showWinnerOverlay("COMPLETED", 60);
       });
+
+      // Remove the stalled→play() — it interrupts the browser's buffer fetch
+      // and causes an infinite stall loop on mobile.
+      // The watchdog below handles genuine hangs instead.
       video.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      // Watchdog: every 4 s check if video is supposed to be playing but isn't.
+      // This catches genuine hangs without fighting normal buffering pauses.
+      let watchdogLastTime = -1;
+      setInterval(() => {
+        if (location.hash !== "#cockfight") return;
+        if (video.ended || cockfightDialogOpen) return;
+        const panel = document.getElementById("cockfight-panel");
+        if (!panel || panel.hidden) return;
+        if (video.paused && !video.ended) {
+          video.play().catch(() => {});
+          return;
+        }
+        // Detect freeze: currentTime hasn't advanced for 4 s while video is "playing"
+        if (!video.paused && video.currentTime === watchdogLastTime && watchdogLastTime >= 0) {
+          // For HLS use recoverMediaError(); for native fall back to play()
+          if (cfHlsInstance) {
+            cfHlsInstance.recoverMediaError();
+          } else {
+            video.play().catch(() => {});
+          }
+        }
+        watchdogLastTime = video.currentTime;
+      }, 4000);
     }
 
-    if (seekSeconds === 0 && location.hash === "#cockfight") {
-      video.play().catch(() => {});
-    }
     // Start polling for match result while video plays
     startResultPoll();
   }
 
-  function startCockfightCountdown(startMs, onDone) {
+  function startCockfightCountdown(startMs, clockSkew, onDone) {
     const overlay = document.getElementById("cf-countdown");
     const timerEl = document.getElementById("cf-countdown-timer");
     const subEl = document.querySelector(".cf-countdown__sub");
     const labelEl = document.querySelector(".cf-countdown__label");
     if (!overlay || !timerEl) { onDone(); return; }
 
+    // serverNow corrects for device clock skew using server_time from the API
+    const serverNow = () => Date.now() + clockSkew;
+
     if (cfCountdownInterval) clearInterval(cfCountdownInterval);
     overlay.hidden = false;
 
-    const alreadyStarted = startMs <= Date.now();
+    const alreadyStarted = startMs <= serverNow();
     if (alreadyStarted) {
       timerEl.textContent = "00:00";
       if (labelEl) labelEl.textContent = "Match is live now!";
       if (subEl) subEl.textContent = "Loading match...";
-      // Show briefly then start
       setTimeout(() => { overlay.hidden = true; onDone(); }, 1200);
       return;
     }
@@ -242,7 +570,7 @@
     if (subEl) subEl.textContent = "Get ready to place your bets!";
 
     const tick = () => {
-      const remaining = Math.max(0, Math.floor((startMs - Date.now()) / 1000));
+      const remaining = Math.max(0, Math.floor((startMs - serverNow()) / 1000));
       const h = Math.floor(remaining / 3600);
       const m = Math.floor((remaining % 3600) / 60);
       const s = remaining % 60;
@@ -292,7 +620,7 @@
     if (cfResultPollInterval) { clearInterval(cfResultPollInterval); cfResultPollInterval = null; }
   }
 
-  function showWinnerOverlay(winner) {
+  function showWinnerOverlay(winner, durationSecs) {
     const overlay = document.getElementById("cf-winner");
     const nameEl  = document.getElementById("cf-winner-name");
     const badgeEl = document.getElementById("cf-winner-badge");
@@ -302,39 +630,51 @@
     // Pause the video
     document.getElementById("cockfight-video")?.pause();
 
-    // Set winner name
-    const labelMap = { MERON: "Meron Wins! 🐓", BLUE: "Wala Wins! 🐓", WALA: "Wala Wins! 🐓", DRAW: "It's a Draw! 🤝", RED: "Meron Wins! 🐓" };
+    // Set winner name / match-complete message
+    const labelMap = {
+      MERON: "Meron Wins! 🐓", BLUE: "Wala Wins! 🐓",
+      WALA: "Wala Wins! 🐓", DRAW: "It's a Draw! 🤝",
+      RED: "Meron Wins! 🐓", COMPLETED: "Match Completed 🏆"
+    };
     nameEl.textContent = labelMap[winner?.toUpperCase()] || (winner + " Wins!");
 
-    // Check user's own last bet result
+    // Sub-title tweak for generic completion
+    const subEl = overlay.querySelector(".cf-winner__sub");
+    if (winner?.toUpperCase() === "COMPLETED") {
+      if (subEl) subEl.textContent = "Results will be announced shortly.";
+    } else {
+      if (subEl) subEl.textContent = "Congratulations to all winners!";
+    }
+
+    // Check user's own last bet result (only when winner is known)
     badgeEl.textContent = "";
     badgeEl.className = "cf-winner__badge";
-    K.fetchMeronWalaBetsMine && K.fetchMeronWalaBetsMine().then(res => {
-      const bets = res?.data || [];
-      const last = bets[0];
-      if (last) {
-        if (last.status === "WON") {
-          badgeEl.textContent = "🎉 You Won ₹" + (last.payout_amount || "");
-          badgeEl.classList.add("cf-winner__badge--won");
-        } else if (last.status === "LOST") {
-          badgeEl.textContent = "😔 Better luck next time";
-          badgeEl.classList.add("cf-winner__badge--lost");
+    if (winner?.toUpperCase() !== "COMPLETED") {
+      K.fetchMeronWalaBetsMine && K.fetchMeronWalaBetsMine().then(res => {
+        const bets = res?.data || [];
+        const last = bets[0];
+        if (last) {
+          if (last.status === "WON") {
+            badgeEl.textContent = "🎉 You Won ₹" + (last.payout_amount || "");
+            badgeEl.classList.add("cf-winner__badge--won");
+          } else if (last.status === "LOST") {
+            badgeEl.textContent = "😔 Better luck next time";
+            badgeEl.classList.add("cf-winner__badge--lost");
+          }
         }
-      }
-    }).catch(() => {});
+      }).catch(() => {});
+    }
 
     overlay.hidden = false;
     startConfetti();
 
-    // Countdown 5 minutes then auto-hide
-    let secs = 5 * 60;
-    if (countEl) countEl.textContent = "5:00";
+    // Countdown — default 5 min, 1 min when called from video-ended
+    let secs = durationSecs ?? 5 * 60;
+    const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    if (countEl) countEl.textContent = fmt(secs);
     const ticker = setInterval(() => {
       secs--;
-      if (countEl) {
-        const m = Math.floor(secs / 60), s = secs % 60;
-        countEl.textContent = `${m}:${String(s).padStart(2,"0")}`;
-      }
+      if (countEl) countEl.textContent = fmt(secs);
       if (secs <= 0) { clearInterval(ticker); hideWinnerOverlay(); }
     }, 1000);
     cfWinnerDismissTimeout = ticker;
@@ -410,10 +750,10 @@
       }
       const fresh = await K.fetchMeronWalaInfo();
       const flv = fresh?.latest_round_video;
-      if (flv?.url) {
+      if (flv?.hls_url) {
         clearInterval(cfPollInterval); cfPollInterval = null;
         if (overlay) overlay.hidden = true;
-        loadAndPlayCockfightVideo(video, flv.url, seekSeconds);
+        loadAndPlayCockfightVideo(video, flv.hls_url, seekSeconds);
       } else if (flv?.requires_authentication) {
         clearInterval(cfPollInterval); cfPollInterval = null;
         if (overlay) overlay.hidden = true;
@@ -527,6 +867,10 @@
         if (cfPollInterval) { clearInterval(cfPollInterval); cfPollInterval = null; }
         stopResultPoll();
         hideWinnerOverlay();
+        destroyCfHls(cfHlsInstance); cfHlsInstance = null;
+        destroyCfHls(cfHlsFsInstance); cfHlsFsInstance = null;
+        cockfightLiveBound = false;
+        cockfightMaxTime = 0;
       }
     }
     const vGu = document.getElementById("gundu-video");
@@ -658,6 +1002,7 @@
         vFs.pause();
         vFs.removeAttribute("src");
         vFs.replaceChildren();
+        destroyCfHls(cfHlsFsInstance); cfHlsFsInstance = null;
       }
       document.body.style.overflow = "";
     }
@@ -682,14 +1027,25 @@
     if (!fsRoot || !vIn || !vFs) return;
 
     cockfightDialogOpen = true;
-    const url = (vIn.currentSrc || "").trim() || "assets/cockfight_live_stream.mp4";
-    /* Only reload if src changed */
-    if (vFs.src !== url) {
-      vFs.replaceChildren();
-      vFs.src = url;
+    const url = (vIn.getAttribute("data-cf-src") || "").trim();
+    if (!url) { cockfightDialogOpen = false; return; }
+    // Attach fresh HLS to the FS video element
+    if (vFs.getAttribute("data-cf-src") !== url) {
       vFs.muted = true;
-      vFs.loop = true;
+      vFs.loop = false;
       vFs.poster = "";
+      destroyCfHls(cfHlsFsInstance);
+      cfHlsFsInstance = attachHls(vFs, url, {
+        maxBuffer: 120,
+        onReady: () => {
+          vFs.currentTime = vIn.currentTime || 0;
+          vFs.play().catch(() => {});
+          // Apply current quality preference
+          if (cfHlsFsInstance && cfCurrentQuality !== -1) {
+            cfHlsFsInstance.currentLevel = cfCurrentQuality;
+          }
+        },
+      });
     }
     /** Browser fullscreen + landscape lock — mobile plays wide; portrait lock removed on close */
     function tryLandscapeFullscreenForCockfight() {

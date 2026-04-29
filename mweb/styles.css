@@ -3267,6 +3267,67 @@ a.cockfight-ttl:focus-visible {
   background: rgba(0, 0, 0, 0.72);
 }
 
+/* ── Quality picker ────────────────────────────────────────── */
+.cf-quality {
+  position: absolute;
+  bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  right: 60px;
+  z-index: 7;
+}
+.cf-quality--fs {
+  right: 14px;
+  bottom: auto;
+  top: 14px;
+}
+.cf-quality__btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.60);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 8px #0006;
+  white-space: nowrap;
+}
+.cf-quality__btn:active { background: rgba(0,0,0,.80); }
+.cf-quality__menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  min-width: 110px;
+  background: rgba(20, 20, 20, 0.95);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px #0009;
+}
+.cf-quality--fs .cf-quality__menu {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+.cf-quality__opt {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.cf-quality__opt:hover,
+.cf-quality__opt:focus { background: rgba(255,255,255,.10); }
+.cf-quality__opt.is-active { color: #f5c842; font-weight: 700; }
+.cf-quality__opt.is-active::after { content: " ✓"; }
+
 /* ── Match countdown overlay ───────────────────────────────── */
 .cf-countdown {
   position: absolute;
