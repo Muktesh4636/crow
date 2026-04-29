@@ -1,0 +1,8 @@
+# Optional: add inside your server { } for fight.pravoo.in (nginx)
+# Prevents browsers/CDNs from caching index.html so new ?v= script links load.
+location = /index.html {
+  add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+}
+location = / {
+  add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+}

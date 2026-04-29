@@ -3,12 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <meta name="theme-color" content="#000000" />
   <title>Kokoroko</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=54" /></head>
+  <link rel="stylesheet" href="styles.css?v=58" /></head>
 <body>
   <div class="app-frame">
     <div class="app">
@@ -984,8 +986,52 @@
             <div class="referral-body">
               <div class="referral-hero">
                 <div class="referral-hero__lock" aria-hidden="true">🔐</div>
-                <h3 class="referral-hero__h" id="referral-hero-h">Receive —% Commission.</h3>
+                <h3 class="referral-hero__h" id="referral-hero-h">Receive up to 8% commission</h3>
+                <div class="referral-code referral-code--top" role="group" aria-label="Referral code">
+                  <span class="referral-code__t" id="referral-code-display">— — —</span>
+                  <button type="button" class="referral-code__copy" id="referral-copy-btn" aria-label="Copy code" data-copy="">⎘</button>
+                </div>
+                <button type="button" class="referral-share referral-share--top" id="referral-share-row">
+                  <span>Share &amp; Earn Lifetime</span>
+                  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
+                </button>
                 <p class="referral-hero__p" id="referral-hero-p">For each bet your referred friend wins, you earn a reward making every one of their victories a win for you too!</p>
+                <div class="referral-disclosures">
+                  <button type="button" class="referral-disclosure-btn" id="referral-disclosure-slabs" aria-expanded="false" aria-controls="referral-slabs-panel">
+                    <span class="referral-disclosure-btn__label">Commission slabs</span>
+                    <span class="referral-disclosure-btn__caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div id="referral-slabs-panel" class="referral-disclosure-panel" hidden role="region" aria-labelledby="referral-disclosure-slabs">
+                    <p class="referral-slabs-intro">
+                      Each row is your <strong>total referred members</strong> (everyone who joined with your code) and the <strong>commission rate</strong> that applies for that tier.
+                    </p>
+                    <div class="referral-table-wrap">
+                      <table class="referral-table" aria-label="Commission by number of referrals">
+                        <thead>
+                          <tr>
+                            <th scope="col">When your referrals reach</th>
+                            <th scope="col">You earn</th>
+                          </tr>
+                        </thead>
+                        <tbody id="referral-slabs-tbody"></tbody>
+                      </table>
+                    </div>
+                    <p id="referral-slabs-empty" class="referral-disclosure-empty" hidden>No slab data from the server yet.</p>
+                  </div>
+                  <button type="button" class="referral-disclosure-btn" id="referral-disclosure-rules" aria-expanded="false" aria-controls="referral-rules-panel">
+                    <span class="referral-disclosure-btn__label">How to earn referral bonus</span>
+                    <span class="referral-disclosure-btn__caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div id="referral-rules-panel" class="referral-disclosure-panel referral-rules-panel" hidden role="region" aria-labelledby="referral-disclosure-rules">
+                    <ul class="referral-rules-list">
+                      <li>Share your unique referral code with friends.</li>
+                      <li>They must register using your code. When they play and meet the platform’s activity rules, you earn commission on eligible turnover.</li>
+                      <li>Higher referral counts can unlock better commission rates — open <strong>Commission slabs</strong> above to see how many referred members qualify for each tier and the rate you earn.</li>
+                      <li>Instant referral bonus (if offered) is credited per referee when conditions are met; check your stats for amounts.</li>
+                      <li>Daily commission and dates may be shown in IST where the server provides them.</li>
+                    </ul>
+                  </div>
+                </div>
                 <p id="referral-hero-err" class="referral-hero__err" hidden></p>
                 <div class="referral-stats" id="referral-stats" hidden>
                   <div class="referral-stat"><span class="referral-stat__v" id="referral-stat-total">—</span><span class="referral-stat__l">Total referrals</span></div>
@@ -1000,26 +1046,7 @@
                   <div class="referral-stat"><span class="referral-stat__v" id="referral-stat-legacy">—</span><span class="referral-stat__l">Legacy referral bonus</span></div>
                 </div>
                 <p class="referral-ist" id="referral-commission-ist-line" hidden></p>
-                <div class="referral-code" role="group" aria-label="Referral code">
-                  <span class="referral-code__t" id="referral-code-display">— — —</span>
-                  <button type="button" class="referral-code__copy" id="referral-copy-btn" aria-label="Copy code" data-copy="">⎘</button>
-                </div>
               </div>
-              <button type="button" class="referral-share" id="referral-share-row">
-                <span>Share &amp; Earn Lifetime</span>
-                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
-              </button>
-              <section class="referral-section" id="referral-slabs-section" hidden>
-                <h3 class="referral-section__h">Commission slabs</h3>
-                <div class="referral-table-wrap">
-                  <table class="referral-table" aria-label="Commission slabs">
-                    <thead>
-                      <tr><th scope="col">Min refs</th><th scope="col">Max refs</th><th scope="col">%</th></tr>
-                    </thead>
-                    <tbody id="referral-slabs-tbody"></tbody>
-                  </table>
-                </div>
-              </section>
               <section class="referral-section" id="referral-daily-section" hidden>
                 <h3 class="referral-section__h">Recent daily commissions</h3>
                 <div class="referral-table-wrap referral-table-wrap--scroll">
@@ -1036,11 +1063,6 @@
               </section>
               <h3 class="referral-list__h" id="referral-list-heading" hidden>Your referrals</h3>
               <ul class="referral-list" id="referral-list" hidden></ul>
-              <h3 class="referral-how__h">How does it work?</h3>
-              <div class="referral-faq">
-                <div class="referral-faq__badge"><span class="referral-faq__icon">📣</span><span class="referral-faq__pill">REFER A FRIEND</span></div>
-                <p class="referral-faq__q">How referral works and how to earn?</p>
-              </div>
             </div>
           </div>
 
@@ -1215,8 +1237,8 @@
       </div>
     </div>
   </div>
-  <script src="api.js?v=24" defer></script>
+  <script src="api.js?v=26" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-  <script src="app.js?v=66" defer></script>
+  <script src="app.js?v=70" defer></script>
 </body>
 </html>

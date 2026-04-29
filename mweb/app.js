@@ -913,6 +913,17 @@
     return String(t).replace(/\.0$/, "");
   }
 
+  /** Human-readable slab range: “1–10 members” / “251+ members”. */
+  function formatReferralTierRange(min, max) {
+    const mn = min != null && min !== "" ? Number(min) : NaN;
+    if (!Number.isFinite(mn) || mn < 0) return "—";
+    if (max == null || max === "") return `${Math.round(mn)}+ members`;
+    const mx = Number(max);
+    if (!Number.isFinite(mx)) return `${Math.round(mn)}+ members`;
+    if (mx < mn) return `${Math.round(mn)}+ members`;
+    return `${Math.round(mn)}–${Math.round(mx)} members`;
+  }
+
   function formatReferralDateJoin(iso) {
     if (iso == null || iso === "") return "";
     const s = String(iso).trim();
@@ -928,13 +939,50 @@
     }
   }
 
+  const REFERRAL_HEADLINE_FIXED = "Receive up to 8% commission";
+
+  function setReferralDisclosureOpen(btn, panel, open) {
+    if (!btn || !panel) return;
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.classList.toggle("referral-disclosure-btn--open", open);
+  }
+
+  function resetReferralDisclosures() {
+    setReferralDisclosureOpen(
+      document.getElementById("referral-disclosure-slabs"),
+      document.getElementById("referral-slabs-panel"),
+      false
+    );
+    setReferralDisclosureOpen(
+      document.getElementById("referral-disclosure-rules"),
+      document.getElementById("referral-rules-panel"),
+      false
+    );
+  }
+
+  function initReferralDisclosureTogglesOnce() {
+    const pairs = [
+      ["referral-disclosure-slabs", "referral-slabs-panel"],
+      ["referral-disclosure-rules", "referral-rules-panel"]
+    ];
+    pairs.forEach(([bid, pid]) => {
+      const btn = document.getElementById(bid);
+      const panel = document.getElementById(pid);
+      if (!btn || !panel || btn.dataset.refDisclosure === "1") return;
+      btn.dataset.refDisclosure = "1";
+      btn.addEventListener("click", () => setReferralDisclosureOpen(btn, panel, panel.hidden));
+    });
+  }
+
   async function refreshReferralSubview() {
+    initReferralDisclosureTogglesOnce();
     const heroH = document.getElementById("referral-hero-h");
     const heroErr = document.getElementById("referral-hero-err");
     const statsEl = document.getElementById("referral-stats");
     const statsMoreEl = document.getElementById("referral-stats-more");
     const istLine = document.getElementById("referral-commission-ist-line");
-    const slabsSec = document.getElementById("referral-slabs-section");
+    const slabsPanel = document.getElementById("referral-slabs-panel");
     const slabsBody = document.getElementById("referral-slabs-tbody");
     const dailySec = document.getElementById("referral-daily-section");
     const dailyBody = document.getElementById("referral-daily-tbody");
@@ -942,7 +990,12 @@
     const listHeading = document.getElementById("referral-list-heading");
     const disp = document.getElementById("referral-code-display");
     const cb = document.getElementById("referral-copy-btn");
-    if (!heroH || !K || typeof K.fetchReferralData !== "function") return;
+    if (
+      !heroH ||
+      !K ||
+      typeof K.fetchReferralData !== "function"
+    )
+      return;
     if (heroErr) {
       heroErr.hidden = true;
       heroErr.textContent = "";
@@ -950,19 +1003,42 @@
     const hideExtra = () => {
       if (statsMoreEl) statsMoreEl.hidden = true;
       if (istLine) istLine.hidden = true;
-      if (slabsSec) slabsSec.hidden = true;
       if (dailySec) dailySec.hidden = true;
       if (slabsBody) slabsBody.textContent = "";
       if (dailyBody) dailyBody.textContent = "";
+      resetReferralDisclosures();
     };
-    const { data, error } = await K.fetchReferralData();
+    const slabsFetch =
+      typeof K.fetchCommissionSlabs === "function"
+        ? K.fetchCommissionSlabs()
+        : Promise.resolve({ data: null, error: null });
+    const [refResult, slabsOut] = await Promise.all([
+      K.fetchReferralData(),
+      slabsFetch,
+    ]);
+    let { data, error } = refResult;
+
+    /** Merge tiers from `/api/referral/commission-slabs/` when present (authoritative slab table). */
+    if (!error && data && slabsOut && slabsOut.data) {
+      const sd = slabsOut.data;
+      const slabList = Array.isArray(sd.commission_slabs) ? sd.commission_slabs : [];
+      let merged = { ...data };
+      if (slabList.length > 0) merged.commission_slabs = slabList;
+      const curIb = Number(merged.instant_referral_bonus_per_referee);
+      const slabIb = sd.instant_referral_bonus_per_referee;
+      if (!(Number.isFinite(curIb) && curIb > 0) && slabIb != null && slabIb !== "" && Number(slabIb) > 0) {
+        merged.instant_referral_bonus_per_referee = Number(slabIb);
+      }
+      data = merged;
+    }
+
     if (error || !data) {
       hideExtra();
       if (heroErr) {
         heroErr.textContent = error || "Could not load referral data.";
         heroErr.hidden = false;
       }
-      heroH.textContent = "Receive —% Commission.";
+      heroH.textContent = REFERRAL_HEADLINE_FIXED;
       if (statsEl) statsEl.hidden = true;
       if (listEl) {
         listEl.hidden = true;
@@ -976,11 +1052,7 @@
       }
       return;
     }
-    let pct = formatReferralCommissionPct(data.commission_rate_percent);
-    if (pct === "—" && Array.isArray(data.commission_slabs) && data.commission_slabs.length) {
-      pct = formatReferralCommissionPct(data.commission_slabs[0].commission_percent);
-    }
-    heroH.textContent = pct === "—" ? "Receive —% Commission." : `Receive ${pct}% Commission.`;
+    heroH.textContent = REFERRAL_HEADLINE_FIXED;
     const raw = String(data.referral_code || "").trim();
     if (disp) disp.textContent = raw ? [...raw].join(" ") : "—";
     if (cb) {
@@ -1023,26 +1095,31 @@
       }
     }
 
-    if (slabsBody && slabsSec) {
+    if (slabsBody && slabsPanel) {
       slabsBody.textContent = "";
+      const slabsTableWrap = slabsPanel.querySelector(".referral-table-wrap");
+      const slabsEmpty = document.getElementById("referral-slabs-empty");
       const slabs = Array.isArray(data.commission_slabs) ? data.commission_slabs : [];
       if (slabs.length) {
-        slabsSec.hidden = false;
+        if (slabsTableWrap) slabsTableWrap.hidden = false;
+        if (slabsEmpty) slabsEmpty.hidden = true;
         slabs.forEach((s) => {
           const tr = document.createElement("tr");
-          const minR = s.min_referrals != null ? String(s.min_referrals) : "—";
-          let maxCell = "∞";
-          if (s.max_referrals != null && s.max_referrals !== "") maxCell = String(s.max_referrals);
+          const tier = formatReferralTierRange(s.min_referrals, s.max_referrals);
           const pctS = formatReferralCommissionPct(s.commission_percent);
-          [minR, maxCell, pctS === "—" ? "—" : `${pctS}%`].forEach((cell) => {
-            const td = document.createElement("td");
-            td.textContent = cell;
-            tr.appendChild(td);
-          });
+          const rateText = pctS === "—" ? "—" : `${pctS}% commission`;
+          const tierTd = document.createElement("td");
+          tierTd.className = "referral-table__tier";
+          tierTd.textContent = tier;
+          const rateTd = document.createElement("td");
+          rateTd.textContent = rateText;
+          tr.appendChild(tierTd);
+          tr.appendChild(rateTd);
           slabsBody.appendChild(tr);
         });
       } else {
-        slabsSec.hidden = true;
+        if (slabsTableWrap) slabsTableWrap.hidden = true;
+        if (slabsEmpty) slabsEmpty.hidden = false;
       }
     }
 

@@ -21,6 +21,8 @@ window.KokorokoApi = (function () {
   const AUTH_PROFILE = "/api/auth/profile/";
   const AUTH_LOGOUT = "/api/auth/logout/";
   const AUTH_REFERRAL_DATA = "/api/auth/referral-data/";
+  /** Public slab tiers + instant bonus (same shape nested or at root); merges with referral-data on clients. */
+  const REFERRAL_COMMISSION_SLABS = "/api/referral/commission-slabs/";
   const AUTH_WITHDRAWS_INITIATE = "/api/auth/withdraws/initiate/";
   const AUTH_DEPOSITS_MINE = "/api/auth/deposits/mine/";
   const AUTH_WITHDRAWS_MINE = "/api/auth/withdraws/mine/";
@@ -521,6 +523,33 @@ window.KokorokoApi = (function () {
     }
   }
 
+  async function fetchCommissionSlabs() {
+    if (!isAuthed()) return { data: null, error: null };
+    if (isLocalDemo()) {
+      return {
+        data: {
+          commission_slabs: [],
+          instant_referral_bonus_per_referee: 0
+        },
+        error: null
+      };
+    }
+    const { ok, status, text } = await apiFetch(REFERRAL_COMMISSION_SLABS, { method: "GET" });
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchCommissionSlabs();
+      return { data: null, error: null };
+    }
+    if (!ok || !text) return { data: null, error: null };
+    try {
+      const j = JSON.parse(text);
+      const root = j.data != null ? j.data : j;
+      return { data: root, error: null };
+    } catch {
+      return { data: null, error: null };
+    }
+  }
+
   async function fetchProfile() {
     if (!isAuthed()) return { data: null, error: "Sign in to load your profile." };
     if (isLocalDemo()) {
@@ -828,6 +857,7 @@ window.KokorokoApi = (function () {
     fetchPaymentMethodsDetails,
     fetchProfile,
     fetchReferralData,
+    fetchCommissionSlabs,
     postProfile,
     fetchBankDetails,
     postWithdrawInitiate,
