@@ -3430,9 +3430,7 @@ a.cockfight-ttl:focus-visible {
 .cf-winner__bg {
   position: absolute;
   inset: 0;
-  background: url('assets/cockfight_banner.png') center/cover no-repeat;
-  filter: brightness(0.25) blur(3px);
-  transform: scale(1.05);
+  background: #0a0a0a;
 }
 .cf-winner__confetti {
   position: absolute;

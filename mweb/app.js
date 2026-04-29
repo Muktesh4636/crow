@@ -627,8 +627,11 @@
     const countEl = document.getElementById("cf-winner-countdown");
     if (!overlay || !nameEl) return;
 
-    // Pause the video
-    document.getElementById("cockfight-video")?.pause();
+    // Pause and hide the video so the frozen frame is not visible
+    const _vid = document.getElementById("cockfight-video");
+    const _vidFs = document.getElementById("cockfight-video-fs");
+    if (_vid) { _vid.pause(); _vid.style.visibility = "hidden"; }
+    if (_vidFs) { _vidFs.pause(); _vidFs.style.visibility = "hidden"; }
 
     // Set winner name / match-complete message
     const labelMap = {
@@ -675,7 +678,7 @@
     const ticker = setInterval(() => {
       secs--;
       if (countEl) countEl.textContent = fmt(secs);
-      if (secs <= 0) { clearInterval(ticker); hideWinnerOverlay(); }
+      if (secs <= 0) { clearInterval(ticker); location.reload(); }
     }, 1000);
     cfWinnerDismissTimeout = ticker;
   }
@@ -685,6 +688,11 @@
     stopConfetti();
     const overlay = document.getElementById("cf-winner");
     if (overlay) overlay.hidden = true;
+    // Restore video visibility in case we're navigating away without a reload
+    const _vid = document.getElementById("cockfight-video");
+    const _vidFs = document.getElementById("cockfight-video-fs");
+    if (_vid) _vid.style.visibility = "";
+    if (_vidFs) _vidFs.style.visibility = "";
   }
 
   // ── Simple canvas confetti ────────────────────────────────

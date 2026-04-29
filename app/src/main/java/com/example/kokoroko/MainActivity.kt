@@ -4733,7 +4733,7 @@ private fun CockfightWinnerOverlay(winner: String, userBetStatus: String?, userP
         "DRAW"         -> "🤝 It's a Draw!"
         else            -> "$winner Wins!"
     }
-    var secs by remember { mutableStateOf(300) }
+    var secs by remember { mutableStateOf(60) }
     LaunchedEffect(Unit) {
         while (secs > 0) { kotlinx.coroutines.delay(1000); secs-- }
         onDismissRequest()
@@ -4852,6 +4852,12 @@ fun CockFightLiveScreen(
                 liveSeekSeconds = startMs?.let { maxOf(0, ((nowMs - it) / 1000).toInt()) } ?: 0
                 streamPhase = "playing"
             }
+            info.open -> {
+                // Match is live but API didn't return a specific URL — use the hardcoded HLS stream
+                liveVideoUrl = COCKFIGHT_LIVE_HLS_URL
+                liveSeekSeconds = 0
+                streamPhase = "playing"
+            }
             else -> { streamPhase = "polling" }
         }
     }
@@ -4870,6 +4876,12 @@ fun CockFightLiveScreen(
                     streamPhase = "playing"
                 }
                 lv?.requiresAuthentication == true -> streamPhase = "login"
+                info.open -> {
+                    // Match is live — fallback to hardcoded HLS stream
+                    liveVideoUrl = COCKFIGHT_LIVE_HLS_URL
+                    liveSeekSeconds = 0
+                    streamPhase = "playing"
+                }
             }
         }
     }
@@ -4959,7 +4971,7 @@ fun CockFightLiveScreen(
                                     textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                             }
                         }
-                        else -> { // "playing" or "winner" — show the player
+                        "playing" -> {
                             val url = liveVideoUrl
                             if (url != null) {
                                 CockFightHlsStream(
@@ -4981,15 +4993,16 @@ fun CockFightLiveScreen(
                                     startFullscreen = false
                                 )
                             }
-                            // Winner overlay on top of video
-                            if (streamPhase == "winner") {
-                                CockfightWinnerOverlay(
-                                    winner = winnerLabel,
-                                    userBetStatus = userBetStatus,
-                                    userPayout = userBetPayout,
-                                    onDismissRequest = { streamPhase = "loading" }
-                                )
-                            }
+                        }
+                        "winner" -> {
+                            // Black screen — no frozen video frame behind the overlay
+                            Box(Modifier.fillMaxSize().background(Color(0xFF0A0A0A)))
+                            CockfightWinnerOverlay(
+                                winner = winnerLabel,
+                                userBetStatus = userBetStatus,
+                                userPayout = userBetPayout,
+                                onDismissRequest = { onBack() }
+                            )
                         }
                     }
                 }
