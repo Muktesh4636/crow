@@ -2875,7 +2875,19 @@ fun MainScreen(onLogout: () -> Unit) {
                 }
             }
         ) { paddingValues ->
-            Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+            // Cock fight: horizontal safe-area padding narrows the player (side black bars). Keep top/bottom insets only.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(
+                        if (currentSubScreen == "cock_fight_live") {
+                            Modifier.padding(
+                                top = paddingValues.calculateTopPadding(),
+                                bottom = paddingValues.calculateBottomPadding()
+                            )
+                        } else Modifier.padding(paddingValues)
+                    )
+            ) {
             when {
                 currentSubScreen == "payment_options" ->
                     PaymentOptionsScreen(
@@ -4944,12 +4956,12 @@ fun CockFightLiveScreen(
                 // Stable key: fullscreen hides sibling items; without this the stream slot is recreated,
                 // onDispose forces portrait and drops fullscreen — user stays in portrait.
                 item(key = "cockfight_hls_stream") {
+                // Full-bleed 16:9 like mweb (.cockfight-stream__box) — no side padding
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(248.dp)
-                        .padding(horizontal = 16.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .aspectRatio(16f / 9f)
+                        .background(Color.Black)
                 ) {
                     when (streamPhase) {
                         "countdown" -> CockfightCountdownOverlay(
@@ -4990,7 +5002,8 @@ fun CockFightLiveScreen(
                                         cockfightWalletText = formatRupeeBalanceForDisplay(bal)
                                     },
                                     onFullscreenChanged = { isVideoFullscreen = it },
-                                    startFullscreen = false
+                                    startFullscreen = false,
+                                    cropVideoToFill = true
                                 )
                             }
                         }
@@ -10029,7 +10042,9 @@ private fun CockFightHlsStream(
     /** After a successful Meron/Wala bet, server `wallet_balance` (e.g. "900.00") for UI refresh. */
     onWalletBalanceAfterBet: ((String) -> Unit)? = null,
     onFullscreenChanged: ((Boolean) -> Unit)? = null,
-    startFullscreen: Boolean = false
+    startFullscreen: Boolean = false,
+    /** Like mweb object-fit: cover — fill the 16:9 frame without side letterboxing (cock fight live screen). */
+    cropVideoToFill: Boolean = false
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
@@ -10111,6 +10126,14 @@ private fun CockFightHlsStream(
         }
     }
     DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
+
+    LaunchedEffect(exoPlayer, cropVideoToFill) {
+        exoPlayer.videoScalingMode = if (cropVideoToFill) {
+            androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+        } else {
+            androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        }
+    }
 
     fun exitFullscreen() {
         fullscreen = false
@@ -10215,6 +10238,10 @@ private fun CockFightHlsStream(
                         androidx.media3.ui.PlayerView(it).apply {
                             player = exoPlayer
                             useController = false
+                            resizeMode = if (cropVideoToFill)
+                                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            else
+                                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                             layoutParams = android.view.ViewGroup.LayoutParams(
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -10399,6 +10426,10 @@ private fun CockFightHlsStream(
                     androidx.media3.ui.PlayerView(it).apply {
                         player = exoPlayer
                         useController = false
+                        resizeMode = if (cropVideoToFill)
+                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        else
+                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                         layoutParams = android.view.ViewGroup.LayoutParams(
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT
