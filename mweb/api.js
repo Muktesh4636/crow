@@ -1,10 +1,16 @@
 /**
- * Kokoroko mweb API -- same base URL and routes as app/src/.../MainActivity.kt
- * (API_BASE_URL, Bearer auth, JSON bodies). Requires CORS on the backend
- * (Access-Control-Allow-Origin for your mweb host).
+ * Kokoroko mweb API -- same base URL and routes as the Android app (config/api-base-url.txt).
+ * Load api-base.generated.js before this file (set by syncKokorokoMwebApiBase / Android preBuild).
+ * Requires CORS on the backend (Access-Control-Allow-Origin for your mweb host).
  */
 window.KokorokoApi = (function () {
-  const API_BASE_URL = "https://fight.pravoo.in";
+  const API_BASE_URL =
+    (typeof window !== "undefined" && window.__KOKOROKO_API_BASE_URL__) || "";
+  if (!API_BASE_URL) {
+    console.error(
+      "Kokoroko: load api-base.generated.js before api.js, or run: ./gradlew :app:syncKokorokoMwebApiBase"
+    );
+  }
   const LS_ACCESS = "kokoroko_access";
   const LS_REFRESH = "kokoroko_refresh";
   const LS_DEMO_USER = "kokoroko_local_demo_user";
@@ -446,7 +452,9 @@ window.KokorokoApi = (function () {
           name: m.name || m.title || m.label || (m.method_type || "Method"),
           type: (m.method_type || m.type || "upi").toUpperCase(),
           upiId: m.upi_id || m.vpa || null,
-          qrImageUrl: m.qr_image ? ("https://fight.pravoo.in" + m.qr_image) : (m.qr_code || m.qr_url || m.qr_image_url || null),
+          qrImageUrl: m.qr_image
+            ? (String(m.qr_image).startsWith("http") ? m.qr_image : joinUrl(m.qr_image))
+            : (m.qr_code || m.qr_url || m.qr_image_url || null),
           bankName: m.bank_name || null,
           accountNumber: m.account_number || null,
           accountHolder: m.account_holder || m.account_name || null,

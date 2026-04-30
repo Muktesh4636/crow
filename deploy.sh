@@ -5,6 +5,10 @@
 # ─────────────────────────────────────────────────────────
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Single source: config/api-base-url.txt (same as Android + mweb)
+APP_PUBLIC_URL="$(tr -d '\r\n' < "$ROOT_DIR/config/api-base-url.txt" | head -1)"
+
 HOST="root@72.61.148.117"
 PASS='To1#NXG(ihxodLqmDUU6'
 REMOTE_DIR="/var/www/fight-mweb"
@@ -17,4 +21,4 @@ sshpass -p "$PASS" rsync -avz --delete \
   "$LOCAL_DIR/" \
   "${HOST}:${REMOTE_DIR}/"
 
-echo "✓ Deploy complete → https://fight.pravoo.in"
+echo "✓ Deploy complete → ${APP_PUBLIC_URL}"

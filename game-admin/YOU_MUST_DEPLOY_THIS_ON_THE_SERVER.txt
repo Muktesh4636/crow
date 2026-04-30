@@ -1,4 +1,4 @@
-This Kokoroko folder is the Android app. It does NOT publish https://fight.pravoo.in/
+This Kokoroko folder is the Android app. It does NOT publish your public web URL by itself.
 
 To see Cricket, Gundu Ata, and Cock fight as THREE SEPARATE blocks on the admin dashboard:
 
@@ -8,6 +8,6 @@ To see Cricket, Gundu Ata, and Cock fight as THREE SEPARATE blocks on the admin 
    - Put the entire <style>...</style> block in your base layout or dashboard template head (once).
    - Put the HTML from <!-- START paste --> through <!-- END paste --> inside the dashboard body.
 4. Change href on each card to match your real routes if they differ.
-5. Deploy that backend to fight.pravoo.in (git pull, restart server, etc.)
+5. Deploy that backend to your production host (git pull, restart server, etc.)
 
 Until step 3–5 happen on the SERVER, the live site will not change.

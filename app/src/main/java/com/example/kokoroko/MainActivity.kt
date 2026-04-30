@@ -132,6 +132,11 @@ private const val PKG_PAYTM = "net.one97.paytm"
 
 /** Wallet screen: warm brown ink (readable, no black/charcoal) */
 private val WalletInkWarm = Color(0xFF6D4C41)
+/** Bank/UPI detail cards — same as mweb `.dep-dialog__card` (white PDF-style). */
+private val WalletDocPaper = Color.White
+private val WalletDocBorder = Color(0xFFEEEEEE)
+private val WalletDocInk = Color(0xFF111111)
+private val WalletDocMuted = Color(0xFF888888)
 
 /** Home top bar: soft gray-black (not pure black) */
 private val HeaderInkLight = Color(0xFF5C5C5C)
@@ -139,10 +144,9 @@ private val HeaderInkLight = Color(0xFF5C5C5C)
 private val HeaderOrangeLight = Color(0xFFFFB74D)
 
 /**
- * Backend API origin (scheme + host, no trailing slash).
- * Update this when you set your production domain; all API URLs are derived from it.
+ * Backend API origin (scheme + host, no trailing slash). Source of truth: [config/api-base-url.txt] (Gradle → [BuildConfig.API_BASE_URL]).
  */
-private const val API_BASE_URL = "https://fight.pravoo.in"
+private val API_BASE_URL: String = BuildConfig.API_BASE_URL
 
 /** Joins [API_BASE_URL] with a path (leading `/` optional). */
 private fun apiUrl(path: String): String {
@@ -3048,7 +3052,7 @@ private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
                         Button(
                             onClick = {
                                 val url = fv.downloadUrl.let {
-                                    if (it.startsWith("http")) it else "https://fight.pravoo.in$it"
+                                    if (it.startsWith("http")) it else apiUrl(it)
                                 }
                                 context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
                             },
@@ -3069,7 +3073,7 @@ private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
                         info = ov,
                         onDownload = {
                             val url = ov.downloadUrl.let {
-                                if (it.startsWith("http")) it else "https://fight.pravoo.in$it"
+                                if (it.startsWith("http")) it else apiUrl(it)
                             }
                             context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
                         },
@@ -8715,7 +8719,7 @@ private fun WithdrawRecordRow(record: WithdrawRecordApi) {
                         append(record.withdrawalDetails)
                     },
                     fontSize = 13.sp,
-                    color = WalletInkWarm,
+                    color = WalletDocInk,
                     fontWeight = FontWeight.Medium
                 )
             }
@@ -9226,8 +9230,8 @@ private fun BankDetailLine(label: String, value: String, copyable: Boolean = fal
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-        Text(label, fontSize = 12.sp, color = Color.Gray)
-        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = WalletInkWarm)
+        Text(label, fontSize = 12.sp, color = WalletDocMuted)
+        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = WalletDocInk)
         }
         if (copyable) {
             IconButton(
@@ -9257,11 +9261,11 @@ private fun BankDetailsPanel(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xFFFFF8F0),
-        border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+        color = WalletDocPaper,
+        border = BorderStroke(1.dp, WalletDocBorder)
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text("Your bank details", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletInkWarm)
+            Text("Your bank details", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletDocInk)
             Spacer(Modifier.height(10.dp))
             when {
                 loading -> {
@@ -9272,7 +9276,7 @@ private fun BankDetailsPanel(
                             strokeWidth = 2.dp
                         )
                         Spacer(Modifier.width(12.dp))
-                        Text("Loading from server…", color = WalletInkWarm, fontSize = 14.sp)
+                        Text("Loading from server…", color = WalletDocMuted, fontSize = 14.sp)
                     }
                 }
                 error != null -> {
@@ -9345,12 +9349,12 @@ private fun UpiQrAndVpaFromApi(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
             shape = RoundedCornerShape(8.dp),
-            color = Color(0xFFFFF8F0),
-            border = BorderStroke(1.dp, OrangePrimary.copy(alpha = 0.35f))
+            color = WalletDocPaper,
+            border = BorderStroke(1.dp, WalletDocBorder)
         ) {
             Column(Modifier.padding(12.dp)) {
-                Text("UPI / VPA", fontSize = 12.sp, color = Color.Gray)
-                Text(upiId, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletInkWarm)
+                Text("UPI / VPA", fontSize = 12.sp, color = WalletDocMuted)
+                Text(upiId, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletDocInk)
             }
         }
     }
@@ -9704,7 +9708,7 @@ fun PaymentMethodItem(name: String, icon: ImageVector, color: Color, upiId: Stri
             }
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(name, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletInkWarm)
+                Text(name, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = WalletDocInk)
             }
             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray)
         }
@@ -9837,7 +9841,7 @@ private fun WithdrawalDestinationCard(
         Text(
             "Withdrawal destination",
             fontWeight = FontWeight.Bold,
-            color = WalletInkWarm,
+            color = WalletDocInk,
             fontSize = 15.sp
         )
         Spacer(Modifier.height(8.dp))
