@@ -668,15 +668,11 @@ a.brand--home:focus-visible {
 
 /* Home search */
 /* APK download banner */
-@keyframes apk-banner-in {
-  from { opacity: 0; transform: translateY(-14px); max-height: 0; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
-  to   { opacity: 1; transform: translateY(0);     max-height: 120px; margin-top: 10px; margin-bottom: 4px; padding-top: 12px; padding-bottom: 12px; }
-}
 .apk-banner {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 10px 16px 4px;
+  margin: 10px 16px 8px;
   padding: 12px 14px;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
   border: 1px solid rgba(255,255,255,0.1);
@@ -684,19 +680,6 @@ a.brand--home:focus-visible {
   text-decoration: none;
   color: #fff;
   box-shadow: 0 2px 12px rgba(0,0,0,0.35);
-  overflow: hidden;
-  /* hidden until JS reveals it */
-  opacity: 0;
-  max-height: 0;
-  margin-top: 0;
-  margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  pointer-events: none;
-}
-.apk-banner--visible {
-  animation: apk-banner-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  pointer-events: auto;
 }
 .apk-banner[hidden] { display: none !important; }
 .apk-banner__icon {
@@ -740,17 +723,6 @@ a.brand--home:focus-visible {
   color: #fff;
   font-size: 13px;
   font-weight: 600;
-}
-.apk-banner__close {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: rgba(255,255,255,0.5);
-  font-size: 20px;
-  line-height: 1;
-  padding: 0 0 0 4px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
 }
 
 .search-wrap {
@@ -1049,6 +1021,18 @@ a.brand--home:focus-visible {
   letter-spacing: 0.1em;
   line-height: 1;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+.live-stream-badge__sep {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  line-height: 1;
+}
+.live-stream-badge__viewers {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
 }
 @keyframes live-dot-blink {
   0%,
@@ -1509,6 +1493,149 @@ a.brand--home:focus-visible {
 .wallet-dest__inner {
   width: 100%;
 }
+.wallet-dest__hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #888;
+  line-height: 1.4;
+}
+.wallet-dest__hint--loading {
+  color: var(--orange-primary);
+  opacity: 0.7;
+}
+.wallet-acct-card {
+  position: relative;
+  background: #fff;
+  border: 1.5px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.wallet-acct-card:last-child {
+  margin-bottom: 0;
+}
+.wallet-acct-card.is-selected {
+  border-color: var(--orange-primary);
+  background: #fff8f2;
+}
+.wallet-acct-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.wallet-acct-card__label {
+  font-size: 12px;
+  color: #888;
+  flex-shrink: 0;
+  min-width: 96px;
+}
+.wallet-acct-card__val {
+  font-size: 13px;
+  color: #111;
+  font-weight: 600;
+  text-align: right;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.wallet-acct-card__mono {
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.wallet-acct-card__copy {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  color: var(--orange-primary);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.wallet-acct-card__badge {
+  display: inline-block;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 8px;
+  margin-top: 6px;
+}
+/* Inline add-bank / add-UPI form */
+.acct-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: #f9f9f9;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+.acct-add-form__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 0 0 2px;
+}
+.acct-add-form__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1a1a1a;
+  background: #fff;
+  outline: none;
+  -webkit-appearance: none;
+}
+.acct-add-form__input:focus {
+  border-color: var(--orange-primary, #f57c00);
+  box-shadow: 0 0 0 2px rgba(245,124,0,0.15);
+}
+.acct-add-form__err {
+  font-size: 12px;
+  color: #c62828;
+  margin: 0;
+}
+.acct-add-form__btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--orange-primary, #f57c00);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.acct-add-form__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.acct-update-btn {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 14px;
+  border: 1px solid var(--orange-primary, #f57c00);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--orange-primary, #f57c00);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Matches OutlinedButton on WalletScreen (Add bank / Add UPI) */
 .wallet-outlined-btn {
   display: inline-flex;

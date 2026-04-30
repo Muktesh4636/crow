@@ -392,6 +392,7 @@ private suspend fun fetchGameVersion(): GameVersionResponse? =
     }
 
 private val AUTH_LOGIN_URL = apiUrl("/api/auth/login/")
+private val AUTH_TOKEN_REFRESH_URL = apiUrl("/api/auth/token/refresh/")
 private val AUTH_WALLET_URL = apiUrl("/api/auth/wallet/")
 /** Deposit / payout method rows: GPAY, BANK, QR, PHONEPE, PAYTM, UPI, … */
 private val AUTH_PAYMENT_DETAILS_URL = apiUrl("/api/auth/payment-details/")
@@ -402,6 +403,8 @@ private val AUTH_REFERRAL_DATA_URL = apiUrl("/api/auth/referral-data/")
 private val REFERRAL_COMMISSION_SLABS_URL = apiUrl("/api/referral/commission-slabs/")
 private val AUTH_LOGOUT_URL = apiUrl("/api/auth/logout/")
 private val AUTH_BANK_DETAILS_URL = apiUrl("/api/auth/bank-details/")
+private val AUTH_BANK_DETAILS_POST_URL = AUTH_BANK_DETAILS_URL
+private fun authBankDetailsDeleteUrl(id: Int) = AUTH_BANK_DETAILS_URL.trimEnd('/') + "/$id/"
 private val AUTH_WITHDRAW_INITIATE_URL = apiUrl("/api/auth/withdraws/initiate/")
 private val AUTH_DEPOSITS_MINE_URL = apiUrl("/api/auth/deposits/mine/")
 private val AUTH_WITHDRAWS_MINE_URL = apiUrl("/api/auth/withdraws/mine/")
@@ -538,9 +541,14 @@ private object AuthTokenStore {
     @Volatile
     var localDemoUsername: String? = null
 
+    /** Cached application context set during [load]; used by [saveRefreshed] to persist without a caller-supplied context. */
+    @Volatile
+    private var appCtx: Context? = null
+
     fun isLocalDemoSession(): Boolean = accessToken == LOCAL_DEMO_SESSION_TOKEN
 
     fun load(context: Context) {
+        appCtx = context.applicationContext
         val sp = context.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
         accessToken = sp.getString(PREFS_AUTH_TOKEN_KEY, null)
         refreshToken = sp.getString(PREFS_REFRESH_TOKEN_KEY, null)
@@ -563,6 +571,22 @@ private object AuthTokenStore {
             .apply {
                 if (refresh != null) putString(PREFS_REFRESH_TOKEN_KEY, refresh) else remove(PREFS_REFRESH_TOKEN_KEY)
             }
+    }
+
+    /** Called after a successful silent token refresh — updates in-memory tokens and persists to SharedPreferences. */
+    fun saveRefreshed(access: String, refresh: String?) {
+        accessToken = access
+        if (refresh != null) refreshToken = refresh
+        localDemoUsername = null
+        val ctx = appCtx ?: return
+        ctx.getSharedPreferences(PREFS_AUTH, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREFS_AUTH_TOKEN_KEY, access)
+            .remove(PREFS_LOCAL_DEMO_USER)
+            .apply {
+                if (refresh != null) putString(PREFS_REFRESH_TOKEN_KEY, refresh)
+            }
+            .apply()
     }
 
     fun saveLocalDemo(context: Context, username: String) {
@@ -600,6 +624,43 @@ private val sessionExpiredEvents = MutableSharedFlow<Unit>(extraBufferCapacity =
 /** Call from any suspend function that receives a 401 to force the user back to login. */
 private suspend fun notifySessionExpired() {
     sessionExpiredEvents.emit(Unit)
+}
+
+/**
+ * Silently exchanges the stored refresh token for a new access token (30-day session support).
+ * Returns `true` if the refresh succeeded and new tokens are now in [AuthTokenStore].
+ * Returns `false` if the refresh token is missing, expired (HTTP 401/403), or a network error occurred.
+ * Only clears the session on an explicit 401/403 from the refresh endpoint — network errors are ignored
+ * so the user is not logged out when offline.
+ */
+private suspend fun doTokenRefresh(): Boolean = withContext(Dispatchers.IO) {
+    val refresh = AuthTokenStore.refreshToken ?: return@withContext false
+    try {
+        val body = JSONObject().put("refresh", refresh)
+            .toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
+        val req = Request.Builder()
+            .url(AUTH_TOKEN_REFRESH_URL)
+            .post(body)
+            .header("Accept", "application/json")
+            .build()
+        cricketOddsHttpClient.newCall(req).execute().use { resp ->
+            if (resp.code == 401 || resp.code == 403) {
+                // Refresh token itself is rejected by the server — session is truly over
+                notifySessionExpired()
+                return@use false
+            }
+            if (!resp.isSuccessful) return@use false
+            val text = resp.body?.string().orEmpty()
+            val j = runCatching { JSONObject(text) }.getOrNull() ?: return@use false
+            val newAccess = j.optString("access", "").ifBlank { return@use false }
+            val newRefresh = j.optString("refresh", "").ifBlank { null }
+            AuthTokenStore.saveRefreshed(newAccess, newRefresh)
+            true
+        }
+    } catch (_: Exception) {
+        false // network error — do NOT clear session, just fail silently
+    }
 }
 
 private data class GunduataVirtualWebLoad(
@@ -793,7 +854,8 @@ private data class BankDetailsUi(
     val bankName: String,
     val accountNumber: String,
     val ifsc: String,
-    val branch: String = ""
+    val branch: String = "",
+    val id: Int = 0
 )
 
 /** Parsed from GET [AUTH_WALLET_URL]: id, balance, unavailable_balance, withdrawable_balance (+ optional payment_methods, bank/UPI fields). */
@@ -1169,6 +1231,7 @@ private suspend fun fetchWalletFromApi(): Pair<WalletApiResult?, String?> =
                 val text = resp.body?.string().orEmpty()
                 when {
                     resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext fetchWalletFromApi()
                         notifySessionExpired()
                         Pair(null, "Session expired. Please sign in again.")
                     }
@@ -1598,6 +1661,7 @@ private suspend fun fetchAuthReferralData(): Pair<ReferralDataApi?, String?> =
                 val text = resp.body?.string().orEmpty()
                 when {
                     resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext fetchAuthReferralData()
                         notifySessionExpired()
                         Pair(null, "Session expired. Please sign in again.")
                     }
@@ -1653,7 +1717,11 @@ private suspend fun fetchAuthProfile(): Pair<ProfileDetailsApi?, String?> =
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 -> { notifySessionExpired(); Pair(null, "Session expired. Please sign in again.") }
+                    resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext fetchAuthProfile()
+                        notifySessionExpired()
+                        Pair(null, "Session expired. Please sign in again.")
+                    }
                     !resp.isSuccessful || text.isBlank() ->
                         Pair(null, "Could not load profile (${resp.code}).")
                     else -> Pair(parseProfileFromJson(JSONObject(text)), null)
@@ -1757,7 +1825,9 @@ private data class AuthBankDetailsApi(
     /** From `bank_accounts[]` — default-first order when present */
     val allBanks: List<BankDetailsUi> = emptyList(),
     /** From `upi_accounts[].upi_id` — default-first order when present */
-    val allUpiIds: List<String> = emptyList()
+    val allUpiIds: List<String> = emptyList(),
+    /** From `upi_accounts[]` — Pair(upiId, id) default-first order */
+    val allUpiIdsWithId: List<Pair<String, Int>> = emptyList()
 ) {
     fun toBankDetailsUi(): BankDetailsUi =
         BankDetailsUi(accountName, bankName, accountNumber, ifscCode, "")
@@ -1778,7 +1848,8 @@ private fun bankRowFromBankDetailsJson(o: JSONObject): Pair<BankDetailsUi, Boole
         bankName = o.optString("bank_name", "").trim(),
         accountNumber = o.optString("account_number", "").trim(),
         ifsc = o.optString("ifsc_code", "").trim(),
-        branch = ""
+        branch = "",
+        id = o.optInt("id", 0)
     )
     return b to o.optBoolean("is_default", false)
 }
@@ -1821,13 +1892,15 @@ private fun parseAuthBankDetailsBody(body: String): AuthBankDetailsApi? {
         val sortedBanks = bankPairs.sortedByDescending { it.second }.map { it.first }
 
         val upiArr = payload.optJSONArray("upi_accounts") ?: JSONArray()
-        val upiPairs = ArrayList<Pair<String, Boolean>>()
+        val upiPairs = ArrayList<Triple<String, Int, Boolean>>()
         for (i in 0 until upiArr.length()) {
             val o = upiArr.optJSONObject(i) ?: continue
             val vpa = o.optString("upi_id", "").trim()
-            if (vpa.isNotBlank()) upiPairs.add(vpa to o.optBoolean("is_default", false))
+            if (vpa.isNotBlank()) upiPairs.add(Triple(vpa, o.optInt("id", 0), o.optBoolean("is_default", false)))
         }
-        val sortedUpis = upiPairs.sortedByDescending { it.second }.map { it.first }
+        val sortedUpiTriples = upiPairs.sortedByDescending { it.third }
+        val sortedUpis = sortedUpiTriples.map { it.first }
+        val sortedUpisWithId = sortedUpiTriples.map { it.first to it.second }
 
         val pb = sortedBanks.firstOrNull()
         val pu = sortedUpis.firstOrNull().orEmpty()
@@ -1842,7 +1915,8 @@ private fun parseAuthBankDetailsBody(body: String): AuthBankDetailsApi? {
             upiId = pu,
             isDefault = true,
             allBanks = sortedBanks,
-            allUpiIds = sortedUpis
+            allUpiIds = sortedUpis,
+            allUpiIdsWithId = sortedUpisWithId
         )
     }
 
@@ -1877,7 +1951,11 @@ private suspend fun fetchAuthBankDetails(): Pair<AuthBankDetailsApi?, String?> =
             cricketOddsHttpClient.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 when {
-                    resp.code == 401 -> { notifySessionExpired(); Pair(null, "Session expired. Please sign in again.") }
+                    resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext fetchAuthBankDetails()
+                        notifySessionExpired()
+                        Pair(null, "Session expired. Please sign in again.")
+                    }
                     !resp.isSuccessful || text.isBlank() ->
                         Pair(null, "Could not load bank details (${resp.code}).")
                     else -> Pair(parseAuthBankDetailsBody(text), null)
@@ -1885,6 +1963,85 @@ private suspend fun fetchAuthBankDetails(): Pair<AuthBankDetailsApi?, String?> =
             }
         } catch (e: Exception) {
             Pair(null, e.message ?: "Network error")
+        }
+    }
+
+/**
+ * POST /api/auth/bank-details/ — saves a bank account or UPI to the backend.
+ * Returns Pair(true, null) on 201 Created, Pair(false, errorMessage) otherwise.
+ */
+private suspend fun postBankDetailsToApi(
+    accountName: String,
+    bankName: String,
+    accountNumber: String,
+    ifscCode: String,
+    upiId: String
+): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+    val token = AuthTokenStore.accessToken ?: return@withContext Pair(false, "Sign in required.")
+    if (AuthTokenStore.isLocalDemoSession()) return@withContext Pair(false, "Demo account — not saved to server.")
+    try {
+        val json = JSONObject().apply {
+            put("account_name", accountName)
+            put("bank_name", bankName)
+            put("account_number", accountNumber)
+            put("ifsc_code", ifscCode)
+            put("upi_id", upiId)
+            put("is_default", true)
+        }
+        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        val req = Request.Builder()
+            .url(AUTH_BANK_DETAILS_POST_URL)
+            .post(body)
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $token")
+            .build()
+        cricketOddsHttpClient.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            when {
+                resp.code == 401 -> {
+                    if (doTokenRefresh()) return@withContext postBankDetailsToApi(accountName, bankName, accountNumber, ifscCode, upiId)
+                    notifySessionExpired()
+                    Pair(false, "Session expired.")
+                }
+                resp.code == 201 -> Pair(true, null)
+                else -> {
+                    val msg = runCatching { JSONObject(text).optString("error", "").ifBlank { null } }.getOrNull()
+                        ?: "Could not save (${resp.code})."
+                    Pair(false, msg)
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Pair(false, e.message ?: "Network error")
+    }
+}
+
+/** DELETE /api/auth/bank-details/{id}/ — removes the saved bank account or UPI record. */
+private suspend fun deleteBankDetailsFromApi(id: Int): Pair<Boolean, String?> =
+    withContext(Dispatchers.IO) {
+        if (id <= 0) return@withContext Pair(true, null) // no server record to delete
+        val token = AuthTokenStore.accessToken ?: return@withContext Pair(false, "Sign in required.")
+        if (AuthTokenStore.isLocalDemoSession()) return@withContext Pair(true, null)
+        try {
+            val req = Request.Builder()
+                .url(authBankDetailsDeleteUrl(id))
+                .delete()
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer $token")
+                .build()
+            cricketOddsHttpClient.newCall(req).execute().use { resp ->
+                when {
+                    resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext deleteBankDetailsFromApi(id)
+                        notifySessionExpired()
+                        Pair(false, "Session expired.")
+                    }
+                    resp.code == 204 || resp.code == 200 -> Pair(true, null)
+                    else -> Pair(false, "Could not delete (${resp.code}).")
+                }
+            }
+        } catch (e: Exception) {
+            Pair(false, e.message ?: "Network error")
         }
     }
 
@@ -4155,6 +4312,18 @@ private fun CricketOddsFilterTabs(
 }
 
 @Composable
+private fun formatViewerCount(n: Int): String {
+    val rounded = (n / 100) * 100
+    return if (rounded >= 1000) {
+        val k = rounded / 1000
+        val rem = (rounded % 1000) / 100
+        if (rem == 0) "${k}K watching" else "${k}.${rem}K watching"
+    } else {
+        "$rounded watching"
+    }
+}
+
+@Composable
 private fun LiveStreamBlinkingDot() {
     val infiniteTransition = rememberInfiniteTransition(label = "live_stream_dot")
     val dotAlpha by infiniteTransition.animateFloat(
@@ -5646,7 +5815,7 @@ fun CockFightLiveScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                                 .padding(horizontal = 12.dp)
-                                .padding(top = 10.dp, bottom = 8.dp),
+                                .padding(top = 10.dp, bottom = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.Top
                         ) {
@@ -5681,7 +5850,7 @@ fun CockFightLiveScreen(
                 ) {
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 3.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         items(chipAmounts.size) { idx ->
@@ -6605,9 +6774,9 @@ fun GundataLiveScreen(
                             )
                         }
                     }
-                    if (row == 0) Spacer(Modifier.height(6.dp))
+                    if (row == 0) Spacer(Modifier.height(4.dp))
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(4.dp))
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -8588,6 +8757,7 @@ private suspend fun fetchMyWithdrawals(): Pair<List<WithdrawRecordApi>, String?>
                 val text = resp.body?.string().orEmpty()
                 when {
                     resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext fetchMyWithdrawals()
                         notifySessionExpired()
                         Pair(emptyList(), "Session expired. Please sign in again.")
                     }
@@ -8623,6 +8793,7 @@ private suspend fun fetchMyDeposits(): Pair<List<DepositRecordApi>, String?> =
                 val text = resp.body?.string().orEmpty()
                 when {
                     resp.code == 401 -> {
+                        if (doTokenRefresh()) return@withContext fetchMyDeposits()
                         notifySessionExpired()
                         Pair(emptyList(), "Session expired. Please sign in again.")
                     }
@@ -10157,30 +10328,50 @@ private fun AddWithdrawBankDialog(
 private fun AddWithdrawUpiDialog(
     initial: String?,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit
+    onSave: (name: String, upiId: String) -> Unit
 ) {
+    var name by remember { mutableStateOf("") }
     var vpa by remember { mutableStateOf(initial.orEmpty()) }
+    var errorMsg by remember { mutableStateOf("") }
     Dialog(onDismissRequest = onDismiss) {
         Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp)) {
                 Text("Add UPI ID", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.Black)
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Your name") },
+                    singleLine = true,
+                    placeholder = { Text("e.g. Rahul Kumar") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
                     value = vpa,
                     onValueChange = { vpa = it.trim().take(50) },
-                    label = { Text("UPI / VPA") },
+                    label = { Text("UPI ID") },
                     singleLine = true,
                     placeholder = { Text("name@bank") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (errorMsg.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(errorMsg, color = Color(0xFFC62828), fontSize = 12.sp)
+                }
                 Spacer(Modifier.height(16.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onDismiss) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
                     Button(
-                        onClick = { onSave(vpa.trim()) },
-                        enabled = vpa.trim().isNotBlank(),
+                        onClick = {
+                            when {
+                                name.trim().isBlank() -> errorMsg = "Please enter your name."
+                                vpa.trim().isBlank() -> errorMsg = "Please enter your UPI ID."
+                                else -> { errorMsg = ""; onSave(name.trim(), vpa.trim()) }
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
                     ) {
                         Text("Save")
@@ -10479,26 +10670,61 @@ fun WalletScreen(onBack: () -> Unit, onDepositClick: (walletPaymentMethod: Strin
             }
         }
         if (showAddBankDialog) {
+            val existingBank = withdrawSavedDetails?.toBankDetailsUiOrNull()
             AddWithdrawBankDialog(
-                initial = mergedWithdrawBank(withdrawSavedDetails?.toBankDetailsUiOrNull(), localBank),
+                initial = mergedWithdrawBank(existingBank, localBank),
                 onDismiss = { showAddBankDialog = false },
                 onSave = { b ->
                     context.saveLocalWithdrawBank(b)
                     localPrefsEpoch++
                     showAddBankDialog = false
-                    Toast.makeText(context, "Bank account saved for withdrawal", Toast.LENGTH_SHORT).show()
+                    withdrawScope.launch {
+                        // Delete old record first if it exists on the server
+                        val oldId = existingBank?.id ?: 0
+                        if (oldId > 0) deleteBankDetailsFromApi(oldId)
+                        val (ok, err) = postBankDetailsToApi(
+                            accountName = b.accountHolder,
+                            bankName = b.bankName,
+                            accountNumber = b.accountNumber,
+                            ifscCode = b.ifsc,
+                            upiId = ""
+                        )
+                        if (ok) {
+                            withdrawDetailsNonce++
+                            Toast.makeText(context, "Bank account updated", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, err ?: "Saved locally; server sync failed", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             )
         }
         if (showAddUpiDialog) {
+            val existingUpiWithId = withdrawSavedDetails?.allUpiIdsWithId?.firstOrNull()
             AddWithdrawUpiDialog(
                 initial = mergedWithdrawUpi(withdrawSavedDetails?.upiId?.takeIf { it.isNotBlank() }, localUpi),
                 onDismiss = { showAddUpiDialog = false },
-                onSave = { v ->
+                onSave = { upiName, v ->
                     context.saveLocalWithdrawUpi(v)
                     localPrefsEpoch++
                     showAddUpiDialog = false
-                    Toast.makeText(context, "UPI ID saved for withdrawal", Toast.LENGTH_SHORT).show()
+                    withdrawScope.launch {
+                        val oldId = existingUpiWithId?.second ?: 0
+                        if (oldId > 0) deleteBankDetailsFromApi(oldId)
+                        val (ok, err) = postBankDetailsToApi(
+                            accountName = upiName,
+                            bankName = "",
+                            accountNumber = "",
+                            ifscCode = "",
+                            upiId = v
+                        )
+                        if (ok) {
+                            withdrawDetailsNonce++
+                            Toast.makeText(context, "UPI ID updated", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, err ?: "Saved locally; server sync failed", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             )
         }
@@ -10988,6 +11214,14 @@ private fun CockFightHlsStream(
     var fullscreen by remember { mutableStateOf(false) }
     var betSelection by remember { mutableStateOf<CockfightBetSelection?>(null) }
     var showHistory by remember { mutableStateOf(false) }
+    var viewerCount by remember { mutableStateOf(kotlin.random.Random.nextInt(4500, 7500)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(kotlin.random.Random.nextLong(7_000L, 15_000L))
+            val delta = kotlin.random.Random.nextInt(-180, 180)
+            viewerCount = (viewerCount + delta).coerceIn(3_200, 9_500)
+        }
+    }
 
     // Re-apply if something else touched orientation during recomposition
     LaunchedEffect(fullscreen) {
@@ -11281,7 +11515,7 @@ private fun CockFightHlsStream(
                     }
                 }
 
-                // LIVE badge below top bar (no deposit marquee in fullscreen)
+                // LIVE badge + viewer count below top bar (fullscreen)
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -11297,14 +11531,21 @@ private fun CockFightHlsStream(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    LiveStreamBlinkingDot()
+                        ) {
+                            LiveStreamBlinkingDot()
                             Text(
                                 "LIVE",
                                 color = Color(0xFFE53935),
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.8.sp
+                            )
+                            Text("·", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                            Text(
+                                formatViewerCount(viewerCount),
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
                     }
@@ -11367,35 +11608,55 @@ private fun CockFightHlsStream(
                 else Modifier
             )
     ) {
+        // Keep this AndroidView ALWAYS in composition so the surface is never destroyed
+        // on fullscreen toggle. When fullscreen, player is detached here and the Popup
+        // PlayerView takes over; on exit, player is reattached here via update.
+        AndroidView(
+            factory = {
+                androidx.media3.ui.PlayerView(it).apply {
+                    useController = false
+                    resizeMode = if (cropVideoToFill)
+                        androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    else
+                        androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+            },
+            update = { pv ->
+                if (fullscreen) {
+                    // Popup PlayerView is now the active surface; detach here to avoid conflict
+                    pv.player = null
+                } else {
+                    // Restore player when returning from fullscreen (Popup PlayerView is gone)
+                    if (pv.player !== exoPlayer) pv.player = exoPlayer
+                }
+            },
+            modifier = Modifier.fillMaxSize().alpha(if (fullscreen) 0f else 1f)
+        )
         if (!fullscreen) {
-            AndroidView(
-                factory = {
-                    androidx.media3.ui.PlayerView(it).apply {
-                        player = exoPlayer
-                        useController = false
-                        resizeMode = if (cropVideoToFill)
-                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        else
-                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        layoutParams = android.view.ViewGroup.LayoutParams(
-                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Box(Modifier.fillMaxSize().background(Color.Black))
-        }
-        if (!fullscreen) {
-            Row(
+            Surface(
                 modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                shape = RoundedCornerShape(20.dp),
+                color = Color.Black.copy(alpha = 0.5f)
             ) {
-                LiveStreamBlinkingDot()
-                Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    LiveStreamBlinkingDot()
+                    Text("LIVE", color = Color(0xFFE53935), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                    Text("·", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                    Text(
+                        formatViewerCount(viewerCount),
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
             if (showFullscreenButton) {
             IconButton(

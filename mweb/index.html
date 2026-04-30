@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=64" /></head>
+  <link rel="stylesheet" href="styles.css?v=70" /></head>
 <body>
   <div class="app-frame">
     <div class="app">
@@ -291,7 +291,6 @@
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
               Install
             </span>
-            <button type="button" class="apk-banner__close" id="apk-banner-close" aria-label="Dismiss">×</button>
           </a>
 
           <div class="search-wrap">
@@ -494,18 +493,14 @@
               <div class="wallet-dest" data-wallet-only-withdraw hidden>
                 <h3 class="wallet-dest__h">Withdrawal destination</h3>
                 <div class="wallet-dest__inner" data-wallet-dest-bank hidden>
-                  <p class="wallet-dest__hint" id="wallet-saved-bank">Saved bank details load when signed in.</p>
-                  <button type="button" class="wallet-outlined-btn" data-add="bank" aria-label="Add bank account">
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                    <span>Add bank account</span>
-                  </button>
+                  <div id="wallet-bank-cards">
+                    <p class="wallet-dest__hint wallet-dest__hint--loading">Loading…</p>
+                  </div>
                 </div>
                 <div class="wallet-dest__inner" data-wallet-dest-upi hidden>
-                  <p class="wallet-dest__hint" id="wallet-saved-upi">Saved UPI loads when signed in.</p>
-                  <button type="button" class="wallet-outlined-btn" data-add="upi" aria-label="Add UPI ID">
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                    <span>Add UPI ID</span>
-                  </button>
+                  <div id="wallet-upi-cards">
+                    <p class="wallet-dest__hint wallet-dest__hint--loading">Loading…</p>
+                  </div>
                 </div>
               </div>
               <h2 class="wallet-section-title">Enter Amount</h2>
@@ -565,6 +560,8 @@
                 <div class="live-stream-badge live-stream-badge--cockfight" aria-hidden="true">
                   <span class="live-stream-badge__dot"></span>
                   <span class="live-stream-badge__text">LIVE</span>
+                  <span class="live-stream-badge__sep">·</span>
+                  <span class="live-stream-badge__viewers" id="cf-viewers">5.2K watching</span>
                 </div>
                 <!-- Quality picker -->
                 <div class="cf-quality" id="cf-quality-wrap" hidden>
@@ -1158,6 +1155,8 @@
       <div class="live-stream-badge live-stream-badge--fs" aria-hidden="true">
         <span class="live-stream-badge__dot"></span>
         <span class="live-stream-badge__text">LIVE</span>
+        <span class="live-stream-badge__sep">·</span>
+        <span class="live-stream-badge__viewers" id="cf-viewers-fs">5.2K watching</span>
       </div>
       <video
         id="cockfight-video-fs"
@@ -1238,8 +1237,8 @@
     </div>
   </div>
   <script src="api-base.generated.js?v=1"></script>
-  <script src="api.js?v=26" defer></script>
+  <script src="api.js?v=31" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-  <script src="app.js?v=70" defer></script>
+  <script src="app.js?v=78" defer></script>
 </body>
 </html>

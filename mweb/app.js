@@ -8,6 +8,18 @@
   const NAV_HASHES = ALL_SCREENS;
   let lastWalletData = null;
   let cockfightLiveBound = false;
+  let cfViewers = Math.floor(Math.random() * 3000) + 4500; // 4500–7500 initial
+  (function tickCfViewers() {
+    const delta = Math.floor(Math.random() * 240) - 120; // ±120 per tick
+    cfViewers = Math.max(3000, Math.min(9500, cfViewers + delta));
+    const k = (Math.round(cfViewers / 100) / 10).toFixed(1);
+    const label = k + "K watching";
+    ["cf-viewers", "cf-viewers-fs"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = label;
+    });
+    setTimeout(tickCfViewers, Math.floor(Math.random() * 9000) + 6000); // 6–15s
+  })();
   let cockfightMaxTime = 0;
   let cockfightDialogOpen = false;
   let cfCountdownInterval = null;
@@ -17,7 +29,7 @@
   let cfPreloadPollTimer = null;
   let cfHlsInstance = null;       // hls.js instance for main #cockfight-video
   let cfHlsFsInstance = null;     // hls.js instance for #cockfight-video-fs (fullscreen)
-  let lastBankWithdraw = { upi: "", bankAcc: "", bankIfsc: "" };
+  let lastBankWithdraw = { upi: "", bankAcc: "", bankIfsc: "", banks: [], upis: [], selectedBankIdx: 0, selectedUpiIdx: 0 };
 
   function balanceNumOnly(s) {
     if (!K) return s == null ? "—" : String(s);
@@ -78,6 +90,13 @@
       }
       return;
     }
+    // Show loading state in destination cards immediately (before async API calls)
+    const bankWrap = document.getElementById("wallet-bank-cards");
+    const upiWrap  = document.getElementById("wallet-upi-cards");
+    if (bankWrap && !bankWrap.querySelector(".wallet-acct-card"))
+      bankWrap.innerHTML = '<p class="wallet-dest__hint wallet-dest__hint--loading">Loading…</p>';
+    if (upiWrap && !upiWrap.querySelector(".wallet-acct-card"))
+      upiWrap.innerHTML = '<p class="wallet-dest__hint wallet-dest__hint--loading">Loading…</p>';
     let { data } = await K.fetchWallet();
     if (!data) {
       const r2 = await K.fetchPaymentMethodsOnly();
@@ -91,17 +110,16 @@
     }
     const bdet = await K.fetchBankDetails();
     if (bdet && bdet.data) {
-      const u = bdet.data.upiId || "";
-      const b = bdet.data.bank;
-      lastBankWithdraw.upi = u;
-      if (b) {
-        lastBankWithdraw.bankAcc = b.accountNumber || "";
-        lastBankWithdraw.bankIfsc = b.ifsc || "";
-        const t = document.getElementById("wallet-saved-bank");
-        if (t) t.textContent = b.accountNumber ? b.bankName + " · · · " + b.accountNumber.slice(-4) : t.textContent;
-      }
-      const uEl = document.getElementById("wallet-saved-upi");
-      if (uEl && u) uEl.textContent = u;
+      lastBankWithdraw.banks = bdet.data.banks || [];
+      lastBankWithdraw.upis  = bdet.data.upis  || [];
+      lastBankWithdraw.selectedBankIdx = 0;
+      lastBankWithdraw.selectedUpiIdx  = 0;
+      const fb = lastBankWithdraw.banks[0];
+      lastBankWithdraw.bankAcc  = fb ? fb.accountNumber : "";
+      lastBankWithdraw.bankIfsc = fb ? fb.ifsc : "";
+      lastBankWithdraw.upi = lastBankWithdraw.upis[0]?.upiId || bdet.data.upiId || "";
+      renderBankDestCards();
+      renderUpiDestCards();
     }
   }
   function pickPaymentMethodId() {
@@ -1587,6 +1605,291 @@
     refreshAllBalances();
   });
 
+  /** Fetch bank details and render destination cards — callable independently of the full wallet load. */
+  async function loadBankDetailsOnly() {
+    if (!K || !K.isAuthed() || K.isLocalDemo()) return;
+    const bankWrap = document.getElementById("wallet-bank-cards");
+    const upiWrap  = document.getElementById("wallet-upi-cards");
+    // Show loading state
+    if (bankWrap && !bankWrap.querySelector(".wallet-acct-card")) {
+      bankWrap.innerHTML = '<p class="wallet-dest__hint wallet-dest__hint--loading">Loading…</p>';
+    }
+    if (upiWrap && !upiWrap.querySelector(".wallet-acct-card")) {
+      upiWrap.innerHTML = '<p class="wallet-dest__hint wallet-dest__hint--loading">Loading…</p>';
+    }
+    const bdet = await K.fetchBankDetails();
+    if (!bdet || !bdet.data) {
+      if (bankWrap && !bankWrap.querySelector(".wallet-acct-card"))
+        bankWrap.innerHTML = '<p class="wallet-dest__hint">Could not load bank details. Try again later.</p>';
+      if (upiWrap && !upiWrap.querySelector(".wallet-acct-card"))
+        upiWrap.innerHTML = '<p class="wallet-dest__hint">Could not load UPI details. Try again later.</p>';
+      return;
+    }
+    lastBankWithdraw.banks = bdet.data.banks || [];
+    lastBankWithdraw.upis  = bdet.data.upis  || [];
+    lastBankWithdraw.selectedBankIdx = 0;
+    lastBankWithdraw.selectedUpiIdx  = 0;
+    const fb = lastBankWithdraw.banks[0];
+    lastBankWithdraw.bankAcc  = fb ? fb.accountNumber : "";
+    lastBankWithdraw.bankIfsc = fb ? fb.ifsc : "";
+    lastBankWithdraw.upi = lastBankWithdraw.upis[0]?.upiId || bdet.data.upiId || "";
+    renderBankDestCards();
+    renderUpiDestCards();
+  }
+
+  function renderBankDestCards() {
+    const wrap = document.getElementById("wallet-bank-cards");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const banks = lastBankWithdraw.banks;
+    if (!banks.length) {
+      // Show inline "Add bank account" form
+      const form = document.createElement("div");
+      form.className = "acct-add-form";
+      form.innerHTML = `
+        <p class="acct-add-form__title">Add Bank Account</p>
+        <input class="acct-add-form__input" id="add-bank-name" type="text" placeholder="Account holder name" autocomplete="name" />
+        <input class="acct-add-form__input" id="add-bank-bankname" type="text" placeholder="Bank name (e.g. HDFC Bank)" />
+        <input class="acct-add-form__input" id="add-bank-accno" type="text" inputmode="numeric" placeholder="Account number" autocomplete="off" />
+        <input class="acct-add-form__input" id="add-bank-ifsc" type="text" placeholder="IFSC code (e.g. HDFC0001234)" autocomplete="off" style="text-transform:uppercase" />
+        <p class="acct-add-form__err" id="add-bank-err" hidden></p>
+        <button type="button" class="acct-add-form__btn" id="add-bank-submit">Save Bank Account</button>
+      `;
+      wrap.appendChild(form);
+      const errEl = form.querySelector("#add-bank-err");
+      const btn = form.querySelector("#add-bank-submit");
+      btn.addEventListener("click", async () => {
+        const name   = (form.querySelector("#add-bank-name").value || "").trim();
+        const bname  = (form.querySelector("#add-bank-bankname").value || "").trim();
+        const accno  = (form.querySelector("#add-bank-accno").value || "").trim();
+        const ifsc   = (form.querySelector("#add-bank-ifsc").value || "").trim().toUpperCase();
+        if (!name)  { errEl.textContent = "Account holder name is required."; errEl.hidden = false; return; }
+        if (!accno) { errEl.textContent = "Account number is required.";       errEl.hidden = false; return; }
+        if (!ifsc)  { errEl.textContent = "IFSC code is required.";            errEl.hidden = false; return; }
+        errEl.hidden = true;
+        btn.disabled = true;
+        btn.textContent = "Saving…";
+        const res = await K.addBankDetails({ account_name: name, bank_name: bname, account_number: accno, ifsc_code: ifsc, upi_id: "", is_default: true });
+        if (res.ok) {
+          await loadBankDetailsOnly();
+        } else {
+          errEl.textContent = res.error || "Could not save bank account.";
+          errEl.hidden = false;
+          btn.disabled = false;
+          btn.textContent = "Save Bank Account";
+        }
+      });
+      return;
+    }
+    banks.forEach((b, i) => {
+      const card = document.createElement("div");
+      card.className = "wallet-acct-card" + (i === lastBankWithdraw.selectedBankIdx ? " is-selected" : "");
+      card.setAttribute("data-idx", i);
+      card.innerHTML = `
+        <div class="wallet-acct-card__row">
+          <span class="wallet-acct-card__label">Account holder</span>
+          <span class="wallet-acct-card__val">${b.accountHolder || "—"}</span>
+        </div>
+        <div class="wallet-acct-card__row">
+          <span class="wallet-acct-card__label">Bank</span>
+          <span class="wallet-acct-card__val">${b.bankName || "—"}</span>
+        </div>
+        <div class="wallet-acct-card__row">
+          <span class="wallet-acct-card__label">${b.copyLabel}</span>
+          <span class="wallet-acct-card__val wallet-acct-card__mono">${b.copyText || "—"}
+            <button type="button" class="wallet-acct-card__copy" aria-label="Copy" data-copy="${b.copyText}">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            </button>
+          </span>
+        </div>
+        <div class="wallet-acct-card__row">
+          <span class="wallet-acct-card__label">IFSC</span>
+          <span class="wallet-acct-card__val wallet-acct-card__mono">${b.ifsc || "—"}</span>
+        </div>
+        ${b.isDefault ? '<span class="wallet-acct-card__badge">Default</span>' : ""}
+        <button type="button" class="acct-update-btn" data-update-bank="${i}">Update</button>
+      `;
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".wallet-acct-card__copy")) {
+          const txt = e.target.closest(".wallet-acct-card__copy").getAttribute("data-copy");
+          if (txt) { try { navigator.clipboard.writeText(txt); } catch {} }
+          return;
+        }
+        if (e.target.closest(".acct-update-btn")) {
+          showBankEditForm(wrap, b);
+          return;
+        }
+        lastBankWithdraw.selectedBankIdx = i;
+        lastBankWithdraw.bankAcc  = b.accountNumber;
+        lastBankWithdraw.bankIfsc = b.ifsc;
+        renderBankDestCards();
+      });
+      wrap.appendChild(card);
+    });
+  }
+
+  function showBankEditForm(wrap, existing) {
+    wrap.innerHTML = "";
+    const form = document.createElement("div");
+    form.className = "acct-add-form";
+    form.innerHTML = `
+      <p class="acct-add-form__title">Update Bank Account</p>
+      <input class="acct-add-form__input" id="edit-bank-name" type="text" placeholder="Account holder name" value="${existing.accountHolder || ""}" autocomplete="name" />
+      <input class="acct-add-form__input" id="edit-bank-bankname" type="text" placeholder="Bank name (e.g. HDFC Bank)" value="${existing.bankName || ""}" />
+      <input class="acct-add-form__input" id="edit-bank-accno" type="text" inputmode="numeric" placeholder="Account number" value="${existing.accountNumber || ""}" autocomplete="off" />
+      <input class="acct-add-form__input" id="edit-bank-ifsc" type="text" placeholder="IFSC code" value="${existing.ifsc || ""}" autocomplete="off" style="text-transform:uppercase" />
+      <p class="acct-add-form__err" id="edit-bank-err" hidden></p>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="acct-add-form__btn" id="edit-bank-cancel" style="background:#757575">Cancel</button>
+        <button type="button" class="acct-add-form__btn" id="edit-bank-submit">Save Changes</button>
+      </div>
+    `;
+    wrap.appendChild(form);
+    const errEl = form.querySelector("#edit-bank-err");
+    const btn   = form.querySelector("#edit-bank-submit");
+    form.querySelector("#edit-bank-cancel").addEventListener("click", () => renderBankDestCards());
+    btn.addEventListener("click", async () => {
+      const name  = (form.querySelector("#edit-bank-name").value || "").trim();
+      const bname = (form.querySelector("#edit-bank-bankname").value || "").trim();
+      const accno = (form.querySelector("#edit-bank-accno").value || "").trim();
+      const ifsc  = (form.querySelector("#edit-bank-ifsc").value || "").trim().toUpperCase();
+      if (!name)  { errEl.textContent = "Account holder name is required."; errEl.hidden = false; return; }
+      if (!accno) { errEl.textContent = "Account number is required.";       errEl.hidden = false; return; }
+      if (!ifsc)  { errEl.textContent = "IFSC code is required.";            errEl.hidden = false; return; }
+      errEl.hidden = true;
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      if (existing.id) {
+        const del = await K.deleteBankDetails(existing.id);
+        if (!del.ok) { errEl.textContent = del.error || "Could not remove old record."; errEl.hidden = false; btn.disabled = false; btn.textContent = "Save Changes"; return; }
+      }
+      const res = await K.addBankDetails({ account_name: name, bank_name: bname, account_number: accno, ifsc_code: ifsc, upi_id: "", is_default: true });
+      if (res.ok) {
+        await loadBankDetailsOnly();
+      } else {
+        errEl.textContent = res.error || "Could not save bank account.";
+        errEl.hidden = false;
+        btn.disabled = false;
+        btn.textContent = "Save Changes";
+      }
+    });
+  }
+
+  function renderUpiDestCards() {
+    const wrap = document.getElementById("wallet-upi-cards");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const upis = lastBankWithdraw.upis;
+    if (!upis.length) {
+      // Show inline "Add UPI ID" form
+      const form = document.createElement("div");
+      form.className = "acct-add-form";
+      form.innerHTML = `
+        <p class="acct-add-form__title">Add UPI ID</p>
+        <input class="acct-add-form__input" id="add-upi-name" type="text" placeholder="Your name (e.g. Rahul Kumar)" autocomplete="name" />
+        <input class="acct-add-form__input" id="add-upi-id" type="text" inputmode="email" placeholder="UPI ID (e.g. name@paytm)" autocomplete="off" />
+        <p class="acct-add-form__err" id="add-upi-err" hidden></p>
+        <button type="button" class="acct-add-form__btn" id="add-upi-submit">Save UPI ID</button>
+      `;
+      wrap.appendChild(form);
+      const errEl = form.querySelector("#add-upi-err");
+      const btn = form.querySelector("#add-upi-submit");
+      btn.addEventListener("click", async () => {
+        const name  = (form.querySelector("#add-upi-name").value || "").trim();
+        const upiId = (form.querySelector("#add-upi-id").value || "").trim();
+        if (!name)  { errEl.textContent = "Please enter your name."; errEl.hidden = false; return; }
+        if (!upiId || !upiId.includes("@")) { errEl.textContent = "Enter a valid UPI ID (e.g. name@paytm)."; errEl.hidden = false; return; }
+        errEl.hidden = true;
+        btn.disabled = true;
+        btn.textContent = "Saving…";
+        const res = await K.addBankDetails({ account_name: name, bank_name: "", account_number: "", ifsc_code: "", upi_id: upiId, is_default: true });
+        if (res.ok) {
+          await loadBankDetailsOnly();
+        } else {
+          errEl.textContent = res.error || "Could not save UPI ID.";
+          errEl.hidden = false;
+          btn.disabled = false;
+          btn.textContent = "Save UPI ID";
+        }
+      });
+      return;
+    }
+    upis.forEach((u, i) => {
+      const card = document.createElement("div");
+      card.className = "wallet-acct-card" + (i === lastBankWithdraw.selectedUpiIdx ? " is-selected" : "");
+      card.setAttribute("data-idx", i);
+      card.innerHTML = `
+        <div class="wallet-acct-card__row">
+          <span class="wallet-acct-card__label">${u.copyLabel}</span>
+          <span class="wallet-acct-card__val wallet-acct-card__mono">${u.upiId || "—"}
+            <button type="button" class="wallet-acct-card__copy" aria-label="Copy" data-copy="${u.copyText}">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            </button>
+          </span>
+        </div>
+        ${u.isDefault ? '<span class="wallet-acct-card__badge">Default</span>' : ""}
+        <button type="button" class="acct-update-btn" data-update-upi="${i}">Update</button>
+      `;
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".wallet-acct-card__copy")) {
+          const txt = e.target.closest(".wallet-acct-card__copy").getAttribute("data-copy");
+          if (txt) { try { navigator.clipboard.writeText(txt); } catch {} }
+          return;
+        }
+        if (e.target.closest(".acct-update-btn")) {
+          showUpiEditForm(wrap, u);
+          return;
+        }
+        lastBankWithdraw.selectedUpiIdx = i;
+        lastBankWithdraw.upi = u.upiId;
+        renderUpiDestCards();
+      });
+      wrap.appendChild(card);
+    });
+  }
+
+  function showUpiEditForm(wrap, existing) {
+    wrap.innerHTML = "";
+    const form = document.createElement("div");
+    form.className = "acct-add-form";
+    form.innerHTML = `
+      <p class="acct-add-form__title">Update UPI ID</p>
+      <input class="acct-add-form__input" id="edit-upi-name" type="text" placeholder="Your name" value="${existing.accountHolder || ""}" autocomplete="name" />
+      <input class="acct-add-form__input" id="edit-upi-id" type="text" inputmode="email" placeholder="UPI ID (e.g. name@paytm)" value="${existing.upiId || ""}" autocomplete="off" />
+      <p class="acct-add-form__err" id="edit-upi-err" hidden></p>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="acct-add-form__btn" id="edit-upi-cancel" style="background:#757575">Cancel</button>
+        <button type="button" class="acct-add-form__btn" id="edit-upi-submit">Save Changes</button>
+      </div>
+    `;
+    wrap.appendChild(form);
+    const errEl = form.querySelector("#edit-upi-err");
+    const btn   = form.querySelector("#edit-upi-submit");
+    form.querySelector("#edit-upi-cancel").addEventListener("click", () => renderUpiDestCards());
+    btn.addEventListener("click", async () => {
+      const name  = (form.querySelector("#edit-upi-name").value || "").trim();
+      const upiId = (form.querySelector("#edit-upi-id").value || "").trim();
+      if (!name)  { errEl.textContent = "Please enter your name.";            errEl.hidden = false; return; }
+      if (!upiId || !upiId.includes("@")) { errEl.textContent = "Enter a valid UPI ID (e.g. name@paytm)."; errEl.hidden = false; return; }
+      errEl.hidden = true;
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      if (existing.id) {
+        const del = await K.deleteBankDetails(existing.id);
+        if (!del.ok) { errEl.textContent = del.error || "Could not remove old record."; errEl.hidden = false; btn.disabled = false; btn.textContent = "Save Changes"; return; }
+      }
+      const res = await K.addBankDetails({ account_name: name, bank_name: "", account_number: "", ifsc_code: "", upi_id: upiId, is_default: true });
+      if (res.ok) {
+        await loadBankDetailsOnly();
+      } else {
+        errEl.textContent = res.error || "Could not save UPI ID.";
+        errEl.hidden = false;
+        btn.disabled = false;
+        btn.textContent = "Save Changes";
+      }
+    });
+  }
+
   (function setupWalletUI() {
     const panel = document.getElementById("wallet-panel");
     const walletApp = document.getElementById("wallet-app-root");
@@ -1631,6 +1934,10 @@
       onlyWdr.forEach((el) => {
         el.hidden = isDep;
       });
+      // Lazy-load bank details when switching to withdrawal if not already loaded
+      if (!isDep && K && K.isAuthed() && !K.isLocalDemo() && lastBankWithdraw.banks.length === 0) {
+        loadBankDetailsOnly();
+      }
       if (howtoQ) howtoQ.textContent = isDep ? "How to Deposit" : "How to Withdraw";
       if (chips) chips.setAttribute("data-wallet-hidden", isDep ? "0" : "1");
       const ctaDepBlock = document.getElementById("wallet-cta-deposit-block");
@@ -2016,12 +2323,14 @@
       }
       let details;
       if (pay === "upi") {
-        details = (lastBankWithdraw.upi || "").trim();
+        const selUpi = lastBankWithdraw.upis[lastBankWithdraw.selectedUpiIdx];
+        details = (selUpi ? selUpi.upiId : lastBankWithdraw.upi || "").trim();
       } else {
-        const a = (lastBankWithdraw.bankAcc || "").trim();
-        const i = (lastBankWithdraw.bankIfsc || "").trim();
+        const selBank = lastBankWithdraw.banks[lastBankWithdraw.selectedBankIdx];
+        const a = (selBank ? selBank.accountNumber : lastBankWithdraw.bankAcc || "").trim();
+        const i = (selBank ? selBank.ifsc : lastBankWithdraw.bankIfsc || "").trim();
         if (!a) {
-          window.alert("No saved bank. Add in app or when API returns details.");
+          window.alert("No saved bank account found. Please add one in your account settings.");
           return;
         }
         details = a + (i ? " | " + i : "");
@@ -2963,24 +3272,12 @@
   window.addEventListener("hashchange", onHash);
   onHash();
 
-  /* APK download banner — Android only, show after 3 s on every page load */
+  /* APK download banner — hide only on Apple devices (APK doesn't work on iOS/iPadOS) */
   (function setupApkBanner() {
     const banner = document.getElementById("apk-banner");
-    const closeBtn = document.getElementById("apk-banner-close");
     if (!banner) return;
-    /* Hide entirely on Apple devices — APK doesn't work on iOS/iPadOS */
     const ua = navigator.userAgent || "";
     const isApple = /iPhone|iPad|iPod|Macintosh/i.test(ua);
-    if (isApple) { banner.hidden = true; return; }
-    setTimeout(() => {
-      banner.classList.add("apk-banner--visible");
-    }, 3000);
-    if (closeBtn) {
-      closeBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        banner.hidden = true;
-      });
-    }
+    if (isApple) banner.hidden = true;
   })();
 })();

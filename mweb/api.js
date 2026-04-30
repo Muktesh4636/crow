@@ -29,6 +29,7 @@ window.KokorokoApi = (function () {
   const AUTH_REFERRAL_DATA = "/api/auth/referral-data/";
   /** Public slab tiers + instant bonus (same shape nested or at root); merges with referral-data on clients. */
   const REFERRAL_COMMISSION_SLABS = "/api/referral/commission-slabs/";
+  const AUTH_BANK_DETAILS = "/api/auth/bank-details/";
   const AUTH_WITHDRAWS_INITIATE = "/api/auth/withdraws/initiate/";
   const AUTH_DEPOSITS_MINE = "/api/auth/deposits/mine/";
   const AUTH_WITHDRAWS_MINE = "/api/auth/withdraws/mine/";
@@ -622,28 +623,100 @@ window.KokorokoApi = (function () {
   async function fetchBankDetails() {
     if (!isAuthed() || isLocalDemo()) return { data: null, error: isLocalDemo() ? "Demo" : "Sign in" };
     const { ok, status, text } = await apiFetch(AUTH_BANK_DETAILS, { method: "GET" });
-    if (!ok) return { data: null, error: "Could not load" };
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return fetchBankDetails();
+      clearSession(); dispatchAuth();
+      return { data: null, error: "Session expired" };
+    }
+    if (!ok) return { data: null, error: "Could not load bank details" };
     try {
       const root = JSON.parse(text);
       const payload = root.data || root;
-      if (payload.bank_accounts && Array.isArray(payload.bank_accounts) && payload.bank_accounts[0]) {
-        const b = payload.bank_accounts[0];
-        return {
-          data: {
-            upiId: (payload.upi_accounts && payload.upi_accounts[0] && payload.upi_accounts[0].upi_id) || "",
-            bank: {
-              accountHolder: (b.account_name || "").trim(),
-              bankName: (b.bank_name || "").trim(),
-              accountNumber: (b.account_number || "").trim(),
-              ifsc: (b.ifsc_code || "").trim()
-            }
-          },
-          error: null
-        };
-      }
-      return { data: { upiId: (payload.upi_id || "").trim(), bank: null }, error: null };
+
+      const rawBanks = Array.isArray(payload.bank_accounts) ? payload.bank_accounts : [];
+      const rawUpis  = Array.isArray(payload.upi_accounts)  ? payload.upi_accounts  : [];
+
+      const banks = [...rawBanks]
+        .sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0))
+        .map((b) => ({
+          id:            b.id,
+          accountHolder: (b.account_name    || "").trim(),
+          bankName:      (b.bank_name       || "").trim(),
+          accountNumber: (b.account_number  || "").trim(),
+          ifsc:          (b.ifsc_code       || "").trim(),
+          isDefault:     !!b.is_default,
+          copyText:      (b.copy_text       || b.account_number || "").trim(),
+          copyLabel:     (b.copy_label      || "Account Number").trim(),
+        }));
+
+      const upis = [...rawUpis]
+        .sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0))
+        .map((u) => ({
+          id:        u.id,
+          upiId:     (u.upi_id   || "").trim(),
+          isDefault: !!u.is_default,
+          copyText:  (u.copy_text || u.upi_id || "").trim(),
+          copyLabel: (u.copy_label || "UPI ID").trim(),
+        }));
+
+      return {
+        data: {
+          banks,
+          upis,
+          bank:  banks[0] || null,
+          upiId: upis[0]?.upiId || (payload.upi_id || "").trim(),
+        },
+        error: null,
+      };
     } catch {
       return { data: null, error: "Parse error" };
+    }
+  }
+
+  /**
+   * DELETE /api/auth/bank-details/{id}/ — remove an existing bank/UPI record.
+   * Returns { ok, error }.
+   */
+  async function deleteBankDetails(id) {
+    if (!isAuthed() || isLocalDemo()) return { ok: false, error: "Sign in required." };
+    const { ok, status } = await apiFetch(AUTH_BANK_DETAILS + id + "/", { method: "DELETE" });
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return deleteBankDetails(id);
+      clearSession(); dispatchAuth();
+      return { ok: false, error: "Session expired." };
+    }
+    if (status === 204 || status === 200) return { ok: true, error: null };
+    return { ok: false, error: "Could not delete (" + status + ")." };
+  }
+
+  /**
+   * POST /api/auth/bank-details/ — save a bank account or UPI ID.
+   * body: { account_name, bank_name, account_number, ifsc_code, upi_id, is_default }
+   * Returns { ok, data, error }.
+   */
+  async function addBankDetails(body) {
+    if (!isAuthed() || isLocalDemo()) return { ok: false, error: "Sign in required." };
+    const { ok, status, text } = await apiFetch(AUTH_BANK_DETAILS, {
+      method: "POST",
+      body: JSON.stringify(body),
+      json: true
+    });
+    if (status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) return addBankDetails(body);
+      clearSession(); dispatchAuth();
+      return { ok: false, error: "Session expired." };
+    }
+    if (status === 201) {
+      try { return { ok: true, data: JSON.parse(text), error: null }; } catch { return { ok: true, data: null, error: null }; }
+    }
+    try {
+      const j = JSON.parse(text);
+      return { ok: false, error: j.error || j.detail || extractErrorText(text) || "Could not save (" + status + ")." };
+    } catch {
+      return { ok: false, error: "Server error (" + status + ")." };
     }
   }
 
@@ -905,6 +978,8 @@ window.KokorokoApi = (function () {
     fetchCommissionSlabs,
     postProfile,
     fetchBankDetails,
+    addBankDetails,
+    deleteBankDetails,
     postWithdrawInitiate,
     postDepositUpload,
     fetchDepositsMine,
