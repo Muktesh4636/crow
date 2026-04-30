@@ -96,3 +96,50 @@ tasks.register("syncKokorokoMwebApiBase") {
 }
 
 tasks.named("preBuild").configure { dependsOn("syncKokorokoMwebApiBase") }
+
+/** Copy into mweb so <a href="assets/kokoroko.apk"> on the static site always has a file to serve. */
+def copyApkToMweb(java.io.File src) {
+    def out = rootProject.file("mweb/assets/kokoroko.apk")
+    out.parentFile.mkdirs()
+    java.nio.file.Files.copy(
+        src.toPath(),
+        out.toPath(),
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+    )
+    logger.lifecycle("Published → mweb/assets/kokoroko.apk (from ${src.name})")
+}
+
+tasks.register("publishDebugApkToMweb") {
+    group = "distribution"
+    description = "Copy debug APK to mweb/assets/kokoroko.apk for website download."
+    dependsOn("assembleDebug")
+    doLast {
+        def apk = file("${buildDir}/outputs/apk/debug/app-debug.apk")
+        if (!apk.exists()) {
+            throw new GradleException("Debug APK not found at ${apk}")
+        }
+        copyApkToMweb(apk)
+    }
+}
+
+tasks.register("publishReleaseApkToMweb") {
+    group = "distribution"
+    description = "Copy release APK to mweb/assets/kokoroko.apk (requires assembleRelease to succeed)."
+    dependsOn("assembleRelease")
+    doLast {
+        def releaseDir = file("${buildDir}/outputs/apk/release")
+        if (!releaseDir.exists()) {
+            throw new GradleException("Release output dir missing: ${releaseDir}")
+        }
+        def candidates = ["app-release.apk", "app-release-unsigned.apk"].collect { new File(releaseDir, it) }
+        def apk = candidates.find { it.exists() }
+        if (apk == null) {
+            def files = releaseDir.listFiles({ f -> f.isFile() && f.name.endsWith(".apk") } as java.io.FileFilter)
+            apk = files ? files[0] : null
+        }
+        if (apk == null || !apk.exists()) {
+            throw new GradleException("No release APK in ${releaseDir}")
+        }
+        copyApkToMweb(apk)
+    }
+}

@@ -51,6 +51,28 @@ window.KokorokoApi = (function () {
     return base + p;
   }
 
+  /** Backend may still return the old host in JSON while TLS is only valid for [API_BASE_URL]. */
+  function coerceApiOrigin(url) {
+    const t = String(url || "").trim();
+    if (!t || (!t.startsWith("http://") && !t.startsWith("https://"))) return t;
+    try {
+      const base = new URL(API_BASE_URL);
+      const u = new URL(t);
+      const legacy = new Set(["fight.pravoo.in", "www.fight.pravoo.in"]);
+      if (u.hostname.toLowerCase() === base.hostname.toLowerCase()) return t;
+      if (!legacy.has(u.hostname.toLowerCase())) return t;
+      return new URL(u.pathname + u.search + u.hash, base.origin).toString();
+    } catch {
+      return t;
+    }
+  }
+
+  function rewriteMeronRoundVideo(lv) {
+    if (!lv || typeof lv !== "object") return;
+    if (lv.hls_url) lv.hls_url = coerceApiOrigin(String(lv.hls_url));
+    if (lv.url) lv.url = coerceApiOrigin(String(lv.url));
+  }
+
   function getAccess() {
     try {
       return localStorage.getItem(LS_ACCESS);
@@ -453,7 +475,7 @@ window.KokorokoApi = (function () {
           type: (m.method_type || m.type || "upi").toUpperCase(),
           upiId: m.upi_id || m.vpa || null,
           qrImageUrl: m.qr_image
-            ? (String(m.qr_image).startsWith("http") ? m.qr_image : joinUrl(m.qr_image))
+            ? (String(m.qr_image).startsWith("http") ? coerceApiOrigin(m.qr_image) : joinUrl(m.qr_image))
             : (m.qr_code || m.qr_url || m.qr_image_url || null),
           bankName: m.bank_name || null,
           accountNumber: m.account_number || null,
@@ -784,7 +806,13 @@ window.KokorokoApi = (function () {
       return null;
     }
     if (!ok || !text) return null;
-    try { return JSON.parse(text); } catch { return null; }
+    try {
+      const data = JSON.parse(text);
+      rewriteMeronRoundVideo(data.latest_round_video);
+      return data;
+    } catch {
+      return null;
+    }
   }
 
   /** GET /api/game/meron-wala/latest-round-video/ — public; `{ latest_round_video }` may be null. */
@@ -797,7 +825,15 @@ window.KokorokoApi = (function () {
       return null;
     }
     if (!ok || !text) return null;
-    try { return JSON.parse(text); } catch { return null; }
+    try {
+      const data = JSON.parse(text);
+      const lv = data.latest_round_video;
+      rewriteMeronRoundVideo(lv);
+      if (data.data && data.data.latest_round_video) rewriteMeronRoundVideo(data.data.latest_round_video);
+      return data;
+    } catch {
+      return null;
+    }
   }
 
   async function fetchSupportContacts() {
@@ -850,6 +886,7 @@ window.KokorokoApi = (function () {
 
   return {
     joinUrl,
+    coerceApiOrigin,
     getAccess,
     isLocalDemo,
     isAuthed,

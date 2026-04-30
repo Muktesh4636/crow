@@ -231,6 +231,34 @@
     });
   }
 
+  /** Merge root `odds` with optional `latest_round_video.odds` (per-field). */
+  function effectiveCockfightOdds(info) {
+    const dash = "\u2014";
+    const root = (info && info.odds) || {};
+    const lv = info && info.latest_round_video && info.latest_round_video.odds;
+    function norm(v) {
+      const s = v != null ? String(v).trim() : "";
+      return s !== "" && s !== dash ? s : "";
+    }
+    function cell(rv, dv) {
+      const a = norm(rv);
+      const b = norm(dv);
+      return a || b || dash;
+    }
+    if (lv && typeof lv === "object") {
+      return {
+        COCK1: cell(lv.COCK1, root.COCK1),
+        COCK2: cell(lv.COCK2, root.COCK2),
+        DRAW: cell(lv.DRAW, root.DRAW),
+      };
+    }
+    return {
+      COCK1: norm(root.COCK1) || dash,
+      COCK2: norm(root.COCK2) || dash,
+      DRAW: norm(root.DRAW) || dash,
+    };
+  }
+
   /** VS strip + bet cards: same merged `side_labels` from `/info` (custom names e.g. Red / Black). */
   function applyCockfightSideLabels(info) {
     cfMergedSideLabels = mergeCockfightSideLabels(info);
@@ -241,6 +269,7 @@
       if (k === "COCK1") el.textContent = c1;
       if (k === "COCK2") el.textContent = c2;
     });
+    const odds = effectiveCockfightOdds(info || {});
     ["cockfight-side-bar", "cockfight-fs-side-bar"].forEach((barId) => {
       const bar = document.getElementById(barId);
       if (!bar) return;
@@ -250,10 +279,20 @@
           btn.setAttribute("data-cf-display", c1);
           const lab = btn.querySelector(".cockfight-side-btn__lab");
           if (lab) lab.textContent = c1;
+          btn.setAttribute("data-cf-odd", odds.COCK1);
+          const oddEl = btn.querySelector(".cockfight-side-btn__odd");
+          if (oddEl) oddEl.textContent = odds.COCK1 + "\u00d7";
         } else if (key === "COCK2" || key === "Wala") {
           btn.setAttribute("data-cf-display", c2);
           const lab = btn.querySelector(".cockfight-side-btn__lab");
           if (lab) lab.textContent = c2;
+          btn.setAttribute("data-cf-odd", odds.COCK2);
+          const oddEl = btn.querySelector(".cockfight-side-btn__odd");
+          if (oddEl) oddEl.textContent = odds.COCK2 + "\u00d7";
+        } else if (key === "DRAW" || key === "Draw") {
+          btn.setAttribute("data-cf-odd", odds.DRAW);
+          const oddEl = btn.querySelector(".cockfight-side-btn__odd");
+          if (oddEl) oddEl.textContent = odds.DRAW + "\u00d7";
         }
       });
     });

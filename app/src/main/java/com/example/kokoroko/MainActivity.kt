@@ -155,6 +155,39 @@ private fun apiUrl(path: String): String {
     return base + p
 }
 
+/** Same TLS identity as [API_BASE_URL], but JSON may still contain the old hostname — rewrite so certificate verification succeeds. */
+private val LEGACY_API_HOSTS = setOf("fight.pravoo.in", "www.fight.pravoo.in")
+
+private fun coerceApiOrigin(url: String): String {
+    val t = url.trim()
+    if (t.isEmpty()) return t
+    if (!t.startsWith("http://", ignoreCase = true) && !t.startsWith("https://", ignoreCase = true)) return t
+    return try {
+        val baseUri = Uri.parse(API_BASE_URL.trimEnd('/'))
+        val u = Uri.parse(t)
+        val host = u.host ?: return t
+        if (host.equals(baseUri.host, ignoreCase = true)) return t
+        if (!LEGACY_API_HOSTS.any { host.equals(it, ignoreCase = true) }) return t
+        val auth =
+            baseUri.host?.let { h ->
+                val p = baseUri.port
+                when {
+                    p == -1 -> h
+                    p == 443 && "https".equals(baseUri.scheme, ignoreCase = true) -> h
+                    p == 80 && "http".equals(baseUri.scheme, ignoreCase = true) -> h
+                    else -> "$h:$p"
+                }
+            } ?: return t
+        u.buildUpon()
+            .scheme(baseUri.scheme)
+            .authority(auth)
+            .build()
+            .toString()
+    } catch (_: Exception) {
+        t
+    }
+}
+
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
@@ -174,6 +207,8 @@ data class CockfightRoundVideo(
     val serverTime: String?,
     /** Optional per-video labels (e.g. Red / Black); merged with [CockfightInfoResponse.sideLabelsRoot]. */
     val sideLabels: CockfightSideLabels?,
+    /** Per-round odds when present; merged with root [CockfightInfoResponse.oddsRoot] in [effectiveOdds]. */
+    val odds: MeronWalaOdds?,
 )
 
 /** API `side_labels` payload: display names for COCK1 / COCK2. */
@@ -181,6 +216,28 @@ data class CockfightSideLabels(
     val cock1: String,
     val cock2: String,
 )
+
+/** API `odds`: { "COCK1", "COCK2", "DRAW" } string multipliers (may include stake). */
+data class MeronWalaOdds(
+    val cock1: String,
+    val cock2: String,
+    val draw: String,
+)
+
+private fun JSONObject.parseMeronWalaOddsField(): MeronWalaOdds? {
+    if (!has("odds") || isNull("odds")) return null
+    val o = optJSONObject("odds") ?: return null
+    fun pick(key: String) = o.optString(key, "").trim()
+    val c1 = pick("COCK1")
+    val c2 = pick("COCK2")
+    val d = pick("DRAW")
+    if (c1.isEmpty() && c2.isEmpty() && d.isEmpty()) return null
+    return MeronWalaOdds(
+        cock1 = c1.ifEmpty { "—" },
+        cock2 = c2.ifEmpty { "—" },
+        draw = d.ifEmpty { "—" }
+    )
+}
 
 /** Prefer video-round labels over root-level `side_labels`; default Cock 1 / Cock 2. */
 private fun CockfightInfoResponse.effectiveSideLabels(): CockfightSideLabels =
@@ -213,11 +270,32 @@ data class CockfightInfoResponse(
     val open: Boolean,
     /** Top-level labels when present; may be superseded per-round by `latest_round_video.side_labels`. */
     val sideLabelsRoot: CockfightSideLabels?,
+    /** Default odds for the session; superseded per-field by [CockfightRoundVideo.odds] when set. */
+    val oddsRoot: MeronWalaOdds?,
     val latestRoundVideo: CockfightRoundVideo?,
     val lastResult: CockfightLastResult?,
     /** `server_now - device_now` at fetch, same as mweb `clockSkew` for countdown. */
     val clockSkewMillis: Long,
 )
+
+private fun CockfightInfoResponse.effectiveOdds(): MeronWalaOdds {
+    val r = latestRoundVideo?.odds
+    val root = oddsRoot
+    fun cell(rv: String, ro: String?): String {
+        val a = rv.trim().takeIf { it.isNotEmpty() && it != "—" }
+        val b = ro?.trim()?.takeIf { it.isNotEmpty() && it != "—" }
+        return a ?: b ?: "—"
+    }
+    return if (r != null) {
+        MeronWalaOdds(
+            cock1 = cell(r.cock1, root?.cock1),
+            cock2 = cell(r.cock2, root?.cock2),
+            draw = cell(r.draw, root?.draw)
+        )
+    } else {
+        root ?: MeronWalaOdds("—", "—", "—")
+    }
+}
 
 /** Parse API ISO-8601 timestamp to epoch ms (used for server clock skew). */
 private fun cockfightParseIsoToEpochMillis(iso: String?): Long? {
@@ -304,7 +382,7 @@ private suspend fun fetchGameVersion(): GameVersionResponse? =
                 GameVersionResponse(
                     versionCode = j.optIntValue("version_code", 0),
                     versionName = j.optString("version_name", "").trim(),
-                    downloadUrl = j.optString("download_url", "").trim(),
+                    downloadUrl = coerceApiOrigin(j.optString("download_url", "").trim()),
                     forceUpdate = j.optBoolean("force_update", false)
                 )
             }
@@ -395,7 +473,8 @@ private fun parseCockfightHighlightsJson(body: String): List<CockfightHighlightV
                     .ifBlank { o.optString("poster", "") }
                     .trim()
                     .ifBlank { null }
-            out.add(CockfightHighlightVideo(title, url, thumb))
+            val thumbOut = thumb?.let { coerceApiOrigin(it).takeIf { c -> c.isNotBlank() } }
+            out.add(CockfightHighlightVideo(title, coerceApiOrigin(url), thumbOut))
         }
     } catch (_: Exception) { }
     return out
@@ -821,7 +900,7 @@ private fun JSONObject.optRupeeWithdrawAmount(key: String): String {
 private fun resolvePaymentMediaUrl(path: String): String {
     val p = path.trim()
     if (p.isEmpty()) return p
-    if (p.startsWith("http://", ignoreCase = true) || p.startsWith("https://", ignoreCase = true)) return p
+    if (p.startsWith("http://", ignoreCase = true) || p.startsWith("https://", ignoreCase = true)) return coerceApiOrigin(p)
     val base = API_BASE_URL.trimEnd('/')
     return if (p.startsWith("/")) base + p else "$base/$p"
 }
@@ -3052,7 +3131,10 @@ private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
                         Button(
                             onClick = {
                                 val url = fv.downloadUrl.let {
-                                    if (it.startsWith("http")) it else apiUrl(it)
+                                    when {
+                                        it.startsWith("http") -> coerceApiOrigin(it)
+                                        else -> apiUrl(it)
+                                    }
                                 }
                                 context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
                             },
@@ -3073,7 +3155,10 @@ private fun AppRootWithMaintenanceGate(content: @Composable () -> Unit) {
                         info = ov,
                         onDownload = {
                             val url = ov.downloadUrl.let {
-                                if (it.startsWith("http")) it else apiUrl(it)
+                                when {
+                                    it.startsWith("http") -> coerceApiOrigin(it)
+                                    else -> apiUrl(it)
+                                }
                             }
                             context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
                         },
@@ -3377,7 +3462,7 @@ fun MainScreen(onLogout: () -> Unit) {
                     info = pv,
                     onDownload = {
                         try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pv.downloadUrl)))
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(coerceApiOrigin(pv.downloadUrl))))
                         } catch (_: Exception) {
                             Toast.makeText(context, "Could not open download link", Toast.LENGTH_SHORT).show()
                         }
@@ -4283,6 +4368,12 @@ private data class CockfightOdd(
     /** COCK1 / COCK2 / DRAW — stable for POST body even when label is dynamic (Red, Black, …). */
     val canonicalSide: String,
 )
+
+private fun cockfightOddRowFromApi(esl: CockfightSideLabels, o: MeronWalaOdds) = listOf(
+    CockfightOdd(esl.cock1, o.cock1, CockMeronRed, "COCK1"),
+    CockfightOdd("Draw", o.draw, CockDrawGreen, "DRAW"),
+    CockfightOdd(esl.cock2, o.cock2, CockWalaBlue, "COCK2"),
+)
 private data class CockfightBetSelection(
     val label: String,
     val odd: String,
@@ -4354,13 +4445,15 @@ private suspend fun fetchMeronWalaInfo(): CockfightInfoResponse? =
             val lv = lvJ?.let { o ->
                 val urlStr = sequenceOf(o.optString("hls_url"), o.optString("url"))
                     .firstOrNull { it.isNotEmpty() && it != "null" }
+                    ?.let { coerceApiOrigin(it) }
                 CockfightRoundVideo(
                     roundId = o.optInt("round_id", 0),
                     start = o.optString("start").takeIf { s -> s.isNotEmpty() && s != "null" },
                     url = urlStr,
                     requiresAuthentication = o.optBoolean("requires_authentication", false),
                     serverTime = o.optString("server_time").takeIf { s -> s.isNotEmpty() && s != "null" },
-                    sideLabels = o.parseSideLabelsField()
+                    sideLabels = o.parseSideLabelsField(),
+                    odds = o.parseMeronWalaOddsField()
                 )
             }
             val lrJ = j.optJSONObject("last_result")
@@ -4382,6 +4475,7 @@ private suspend fun fetchMeronWalaInfo(): CockfightInfoResponse? =
                 roundId = j.optInt("round_id").takeIf { j.has("round_id") && !j.isNull("round_id") },
                 open = j.optBoolean("open", false),
                 sideLabelsRoot = j.parseSideLabelsField(),
+                oddsRoot = j.parseMeronWalaOddsField(),
                 latestRoundVideo = lv,
                 lastResult = lr,
                 clockSkewMillis = clockSkewMillis
@@ -5272,16 +5366,12 @@ fun CockFightLiveScreen(
     var cockfightSideLabelsUi by remember {
         mutableStateOf(CockfightSideLabels("Meron", "Wala"))
     }
+    val oddsPlaceholder = MeronWalaOdds("—", "—", "—")
     var cockfightOdds by remember {
-        mutableStateOf(
-            listOf(
-                CockfightOdd("Meron", "1.90", CockMeronRed, "COCK1"),
-                CockfightOdd("Draw", "4.46", CockDrawGreen, "DRAW"),
-                CockfightOdd("Wala", "1.92", CockWalaBlue, "COCK2"),
-            )
-        )
+        mutableStateOf(cockfightOddRowFromApi(CockfightSideLabels("Cock 1", "Cock 2"), oddsPlaceholder))
     }
     var selectedCockfightOdd by remember { mutableStateOf<CockfightOdd?>(cockfightOdds.firstOrNull()) }
+    val latestSelectedCockfightOdd = rememberUpdatedState(selectedCockfightOdd)
     var selectedChipAmount by remember { mutableStateOf(100) }
     val chipAmounts = remember { listOf(50, 100, 200, 300, 500, 1000, 2500, 5000) }
     var placingCockfightBet by remember { mutableStateOf(false) }
@@ -5310,19 +5400,19 @@ fun CockFightLiveScreen(
         cockfightWalletText = formatRupeeBalanceForDisplay(w?.balance)
     }
 
+    fun applyMeronInfoUi(info: CockfightInfoResponse) {
+        val esl = info.effectiveSideLabels()
+        val eo = info.effectiveOdds()
+        val sel = latestSelectedCockfightOdd.value?.canonicalSide
+        cockfightSideLabelsUi = esl
+        cockfightOdds = cockfightOddRowFromApi(esl, eo)
+        selectedCockfightOdd = cockfightOdds.find { it.canonicalSide == sel } ?: cockfightOdds.firstOrNull()
+    }
+
     // ── Initial API fetch ────────────────────────────────────
     LaunchedEffect(Unit) {
         val info = fetchMeronWalaInfo()
-        if (info != null) {
-            val esl = info.effectiveSideLabels()
-            cockfightSideLabelsUi = esl
-            cockfightOdds = listOf(
-                CockfightOdd(esl.cock1, "1.90", CockMeronRed, "COCK1"),
-                CockfightOdd("Draw", "4.46", CockDrawGreen, "DRAW"),
-                CockfightOdd(esl.cock2, "1.92", CockWalaBlue, "COCK2"),
-            )
-            selectedCockfightOdd = cockfightOdds.firstOrNull()
-        }
+        if (info != null) applyMeronInfoUi(info)
         if (info == null) { streamPhase = "polling"; return@LaunchedEffect }
         // Check if match just ended (winner screen)
         if (!info.open && info.lastResult?.winner != null) {
@@ -5348,7 +5438,7 @@ fun CockFightLiveScreen(
             }
             lv?.requiresAuthentication == true && lv.url == null -> streamPhase = "login"
             lv?.url != null -> {
-                liveVideoUrl = lv.url
+                liveVideoUrl = coerceApiOrigin(lv.url!!)
                 liveSeekSeconds = startMs?.let { maxOf(0, ((nowMs - it) / 1000).toInt()) } ?: 0
                 streamPhase = "playing"
             }
@@ -5368,10 +5458,11 @@ fun CockFightLiveScreen(
         while (streamPhase == "polling") {
             kotlinx.coroutines.delay(1000)
             val info = fetchMeronWalaInfo() ?: continue
+            applyMeronInfoUi(info)
             val lv = info.latestRoundVideo
             when {
                 lv?.url != null -> {
-                    liveVideoUrl = lv.url
+                    liveVideoUrl = coerceApiOrigin(lv.url!!)
                     liveSeekSeconds = 0
                     streamPhase = "playing"
                 }
@@ -5392,6 +5483,7 @@ fun CockFightLiveScreen(
         while (streamPhase == "playing") {
             kotlinx.coroutines.delay(3000)
             val info = fetchMeronWalaInfo() ?: continue
+            applyMeronInfoUi(info)
             if (!info.open && info.lastResult?.winner != null) {
                 winnerLabel = info.lastResult.winner
                 try {

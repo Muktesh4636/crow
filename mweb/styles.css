@@ -51,6 +51,7 @@ html[data-header-wallet="1"] #bottom-nav-wallet {
 
 /* Phone frame: centered on desktop, full width on small screens */
 .app-frame {
+  min-height: 100svh;
   min-height: 100dvh;
   display: flex;
   justify-content: center;
@@ -60,6 +61,8 @@ html[data-header-wallet="1"] #bottom-nav-wallet {
 .app {
   width: 100%;
   max-width: var(--app-max);
+  /* svh first: stable viewport avoids a strip below the cockfight dock on mobile */
+  min-height: 100svh;
   min-height: 100dvh;
   background: var(--page-bg);
   position: relative;
@@ -78,11 +81,18 @@ html[data-tab="login"] .bottom-nav,
 html[data-tab="register"] .bottom-nav {
   display: none;
 }
-html[data-tab="cockfight"] .content,
 html[data-tab="gundu"] .content,
 html[data-tab="login"] .content,
 html[data-tab="register"] .content {
   padding-bottom: max(0px, env(safe-area-inset-bottom, 0px));
+}
+/* Cockfight: dock already pads for safe-area; avoid a strip of .app bg below the panel */
+html[data-tab="cockfight"] .content {
+  padding-bottom: 0;
+}
+/* Fixed dock height + safe inset — reserve space in scroll so chips aren’t covered */
+html[data-tab="cockfight"] {
+  --cockfight-dock-pad: calc(76px + env(safe-area-inset-bottom, 0px));
 }
 html[data-tab="login"] .top-header,
 html[data-tab="register"] .top-header {
@@ -2414,11 +2424,14 @@ a.profile-menu__row {
   max-width: 100%;
 }
 .cockfight-scroll {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   min-height: 0;
-  padding-bottom: 8px;
+  padding-bottom: 0;
+}
+html[data-tab="cockfight"] .cockfight-scroll {
+  padding-bottom: var(--cockfight-dock-pad);
 }
 .cockfight-top {
   display: flex;
@@ -2635,8 +2648,19 @@ a.cockfight-ttl:focus-visible {
 .cockfight-dock {
   flex-shrink: 0;
   background: #0d0d0d;
-  padding-top: 20px;
+  padding-top: 6px;
   padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
+}
+/* Pin bar to viewport bottom — removes gap below Place Bet on mobile (flex/dvh issues) */
+html[data-tab="cockfight"] .cockfight-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  max-width: var(--app-max);
+  margin-inline: auto;
+  z-index: 30;
 }
 .cock-chips {
   display: flex;
@@ -3545,7 +3569,9 @@ a.cockfight-ttl:focus-visible {
   overflow: hidden;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
+  padding: 0 12px max(10px, env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
 }
 .cf-countdown__bg {
   position: absolute;
@@ -3560,9 +3586,11 @@ a.cockfight-ttl:focus-visible {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 16px;
+  gap: 4px;
+  padding: 8px 8px 0;
   text-align: center;
+  width: 100%;
+  max-width: 100%;
 }
 .cf-countdown__vs {
   display: flex;
@@ -3621,6 +3649,7 @@ a.cockfight-ttl:focus-visible {
   font-size: 12px;
   color: rgba(255,255,255,0.65);
   margin: 0;
+  padding-bottom: 0;
   text-shadow: 0 1px 4px rgba(0,0,0,0.8);
 }
 
@@ -4314,7 +4343,7 @@ a.cockfight-ttl:focus-visible {
 .cock-vs-bar {
   display: flex;
   align-items: center;
-  margin: 16px 12px 40px;
+  margin: 12px 12px 10px;
   border-radius: 10px;
   overflow: hidden;
   height: 44px;
@@ -4346,12 +4375,13 @@ a.cockfight-ttl:focus-visible {
   display: flex;
   flex-direction: row;
   gap: 8px;
-  padding: 4px 12px 20px;
+  padding: 4px 12px 18px;
 }
 
 /* Cockfight: chips always visible below cards */
 .cock-chips-wrap {
-  padding: 20px 12px 24px;
+  margin-top: 22px;
+  padding: 8px 12px 10px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;

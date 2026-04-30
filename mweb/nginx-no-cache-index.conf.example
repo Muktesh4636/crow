@@ -1,4 +1,9 @@
 # Optional: add inside your server { } for your mweb host (match API_BASE_URL host in app + mweb)
+#
+# APK downloads (assets/kokoroko.apk) — ensure Android MIME type if downloads open as generic binary:
+#   types { application/vnd.android.package-archive apk; }
+# Or inside `location / { ... }` after include mime.types;
+#
 # Prevents browsers/CDNs from caching index.html so new ?v= script links load.
 location = /index.html {
   add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;

@@ -14,6 +14,22 @@ PASS='To1#NXG(ihxodLqmDUU6'
 REMOTE_DIR="/var/www/fight-mweb"
 LOCAL_DIR="$(cd "$(dirname "$0")/mweb" && pwd)"
 
+# Skip APK step with SKIP_APK=1 for mweb-only updates (saves ~30s + signing).
+if [[ "${SKIP_APK:-}" == "1" ]]; then
+  echo "▶ Skipping APK publish (SKIP_APK=1)"
+else
+  echo "▶ Publishing APK → mweb/assets/kokoroko.apk (release if possible, else debug)"
+  (
+    cd "$ROOT_DIR"
+    if ./gradlew :app:publishReleaseApkToMweb --no-daemon -q 2>/dev/null; then
+      :
+    else
+      echo "   (release build unavailable — using debug APK for web download)"
+      ./gradlew :app:publishDebugApkToMweb --no-daemon -q
+    fi
+  )
+fi
+
 echo "▶ Deploying mweb → ${HOST}:${REMOTE_DIR}"
 
 sshpass -p "$PASS" rsync -avz --delete \
